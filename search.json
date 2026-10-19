@@ -1,0 +1,191 @@
+[
+  {
+    "objectID": "random-forest.html",
+    "href": "random-forest.html",
+    "title": "Random Forest classification",
+    "section": "",
+    "text": "A Random Forest is a collection of decision trees. Each tree is grown on a bootstrap sample of the training samples and, at every split, may only choose among a random subset of the genes. A new sample is classified by letting all trees vote, and the share of votes for each class is a built-in measure of how confident the forest is. Here, 1,000 trees per forest classified the four groups (wt mock, wt infected, 6KR mock, 6KR infected) from rlog expression values. Random Forests suit expression data because they still work with thousands of genes and few samples, handle more than two classes directly, and rank genes by their importance: how much the accuracy drops when the values of one gene are randomly permuted."
+  },
+  {
+    "objectID": "random-forest.html#what-a-random-forest-does",
+    "href": "random-forest.html#what-a-random-forest-does",
+    "title": "Random Forest classification",
+    "section": "",
+    "text": "A Random Forest is a collection of decision trees. Each tree is grown on a bootstrap sample of the training samples and, at every split, may only choose among a random subset of the genes. A new sample is classified by letting all trees vote, and the share of votes for each class is a built-in measure of how confident the forest is. Here, 1,000 trees per forest classified the four groups (wt mock, wt infected, 6KR mock, 6KR infected) from rlog expression values. Random Forests suit expression data because they still work with thousands of genes and few samples, handle more than two classes directly, and rank genes by their importance: how much the accuracy drops when the values of one gene are randomly permuted."
+  },
+  {
+    "objectID": "random-forest.html#why-the-gene-selection-has-to-happen-inside-the-cross-validation",
+    "href": "random-forest.html#why-the-gene-selection-has-to-happen-inside-the-cross-validation",
+    "title": "Random Forest classification",
+    "section": "Why the gene selection has to happen inside the cross-validation",
+    "text": "Why the gene selection has to happen inside the cross-validation\nWith 12 samples there is no separate test set, so performance is estimated by leave-one-out cross-validation (LOOCV): each sample is predicted once by a forest built on the other 11. The trap is the gene selection. Choosing the “best” genes on all 12 samples and then cross-validating only the forest lets the test sample influence which genes the model sees, and the estimate becomes optimistic, a selection bias described by Ambroise and McLachlan (PNAS 2002). Therefore the DESeq2 gene selection was repeated inside every fold, on the 11 training samples only, and the pipeline stops with an error if the left-out sample ever enters a fold’s DESeq2 fit.\n\n\n\n\n\nflowchart TB\n  A[\"12 samples\"] --&gt; B[\"Leave one sample out&lt;br&gt;(repeated for each of the 12)\"]\n  B --&gt; C[\"11 training samples\"]\n  B --&gt; T[\"1 test sample\"]\n  C --&gt; D[\"DESeq2 on the 11 samples only&lt;br&gt;→ top 50 genes\"]\n  D --&gt; F[\"Random Forest, 1,000 trees\"]\n  F --&gt; P[\"Predict the test sample\"]\n  T --&gt; P\n  P --&gt; R[\"12 out-of-fold predictions → accuracy\"]\n\n\n\n\n\n\nThe gene filter and the blind rlog transformation use no group labels, so they were computed once for all samples without leaking class information."
+  },
+  {
+    "objectID": "random-forest.html#the-planned-model-8-of-12",
+    "href": "random-forest.html#the-planned-model-8-of-12",
+    "title": "Random Forest classification",
+    "section": "The planned model: 8 of 12",
+    "text": "The planned model: 8 of 12\nModel 1 selected, in every fold, the 50 genes with the smallest p-value in a DESeq2 likelihood-ratio test of the four-group model against a model without groups. It classified 8 of 12 samples correctly (accuracy 0.67, 95 % confidence interval 0.35–0.90), clearly above the 3 of 12 expected by chance (Benjamini-Hochberg adjusted p = 0.0028). Infected and mock samples were separated without error, but all 4 errors confused the genotypes, one in each group, and the vote share of the true class (0.38–0.46) was below that of the predicted class (0.51–0.61).\n\n\n\n\nVote shares of the leave-one-out predictions with 50 genes. Each bar is one left-out sample, the colours show how the 1,000 trees voted. Interactive: hover for the exact shares.\n\n\n\nWhy did Model 1 miss the genotype?\n\n\nThe likelihood-ratio test ranks genes by their overall difference between the four groups, and that difference is dominated by infection. In the final Model 1, 50 of the 50 genes are infection genes, but only 7 are genotype genes in mock cells. The model most likely saw almost no genotype information, which also explains why its accuracy moved with the number of genes (9, 8 and 11 of 12 correct with 20, 50 and 200 genes).\n\n\n\n\n\nMe, explaining to everyone who didn’t run away fast enough why the gene selection has to happen inside the fold."
+  },
+  {
+    "objectID": "random-forest.html#a-design-aware-selection-12-of-12",
+    "href": "random-forest.html#a-design-aware-selection-12-of-12",
+    "title": "Random Forest classification",
+    "section": "A design-aware selection: 12 of 12",
+    "text": "A design-aware selection: 12 of 12\nModel 2 applies the 2 × 2 design to the gene selection: in every fold it takes the 25 genes with the strongest genotype effect and the 25 with the strongest infection effect of an additive DESeq2 model. It classified all 12 samples correctly (95 % confidence interval 0.74–1.00), with 20, 50 and 200 genes alike.\n\n\n\n\n\n\nWarningThis estimate is optimistic\n\n\n\nThe rule of Model 2 was chosen after the errors of Model 1 were analysed on the same 12 samples. Even though the gene selection stayed inside the folds, the choice of the rule itself did not, so the cross-validated accuracy of Model 2 is likely optimistic. The pre-specified result of this project is the one of Model 1, and only an independent dataset could confirm Model 2.\n\n\n\n\n\na, b, Confusion matrices of the leave-one-out predictions. c, Correct predictions with 20, 50 and 200 genes per fold; this check was descriptive and not used to choose the gene number."
+  },
+  {
+    "objectID": "random-forest.html#which-genes-carry-the-classification",
+    "href": "random-forest.html#which-genes-carry-the-classification",
+    "title": "Random Forest classification",
+    "section": "Which genes carry the classification?",
+    "text": "Which genes carry the classification?\nA final Model 2 was fitted on all 12 samples to rank its genes by importance (scaled mean decrease in accuracy), and the number of folds in which each gene was selected was counted as its stability. Genes among the 20 most important that were selected in at least 10 of 12 folds were defined in advance as candidate biomarkers.\n\n\n\nThe 13 candidate genes, ordered by importance.\n\n\n\n\n\n\n\n\n\n\nGene\nEffect\nImportance rank\nFolds selected\nlog2 FC infection (wt)\nlog2 FC 6KR vs wt (mock)\n\n\n\n\nZNF525\ngenotype\n2\n10 / 12\n-1.27\n2.83\n\n\nRPL30\ninfection\n3\n10 / 12\n2.13\n0.08\n\n\nADAMTS2\ngenotype\n4\n12 / 12\n0.37\n7.46\n\n\nTNNT1\ngenotype\n5\n12 / 12\n1.68\n-1.86\n\n\nARRB2\ninfection\n6\n12 / 12\n1.21\n-0.81\n\n\nABI3BP\ngenotype\n7\n12 / 12\n1.11\n1.62\n\n\nZNF883\ngenotype\n8\n12 / 12\n1.14\n3.26\n\n\nZNF432\ngenotype\n10\n12 / 12\n1.70\n2.71\n\n\nGLIPR1\ngenotype\n12\n11 / 12\n0.85\n2.02\n\n\nSULT2B1\ngenotype\n14\n10 / 12\n0.28\n-3.19\n\n\nZNF468\ngenotype\n15\n12 / 12\n-0.49\n1.72\n\n\nOST4\ninfection\n16\n12 / 12\n2.06\n0.11\n\n\nZNF354C\ngenotype\n19\n12 / 12\n0.57\n2.16\n\n\n\n\n\nMost candidates are genotype markers, among them five KRAB zinc-finger genes, the gene family that recruits TRIM28 to repress endogenous retroviruses, so their up-regulation in 6KR cells is the expected signature of impaired TRIM28 function. The infection marker RPL30 most likely reflects the host shutoff rather than an absolute induction. OASL, the most important gene of the final model, was selected in only 9 of 12 folds and so did not pass the stability rule.\n\n\n\na, The 20 most important genes of the final Model 2, coloured by their dominant effect in the differential expression analysis. b, rlog expression of the candidate genes per sample; bars mark the group means."
+  },
+  {
+    "objectID": "random-forest.html#what-i-took-away-from-this",
+    "href": "random-forest.html#what-i-took-away-from-this",
+    "title": "Random Forest classification",
+    "section": "What I took away from this",
+    "text": "What I took away from this\nSome general things I learned about Random Forests on small data, and which I will probably keep in mind for the next project:\n\nThe gene selection is part of the model, so it has to be inside the cross-validation as well, otherwise the accuracy tells you more about the selection than about the classifier.\nHow you select the genes decides what the forest can learn at all. When the selection just follows the biggest effect, a smaller but real factor like the genotype can get lost.\nEvery rule you choose after looking at the result costs a bit of honesty, that’s why Model 2 is reported as an improvement from the error analysis and not as the main result.\nI’d always report the vote shares and the selection stability as well, because the 12 predictions alone hide how close the decisions were and how much the selected genes change between the folds."
+  },
+  {
+    "objectID": "index.html",
+    "href": "index.html",
+    "title": "Can a Random Forest tell influenza-infected cells and TRIM28 genotypes apart?",
+    "section": "",
+    "text": "This project reanalyses a published RNA-seq experiment on influenza A virus (IAV) infection. Lung epithelial cells (A549) carried either the normal host protein TRIM28 (wild type, wt) or a mutant that cannot be modified by SUMO (6KR), and were either mock treated or infected. Two questions were asked: which genes respond to infection and to the TRIM28 genotype, and can a Random Forest classifier assign each of the 12 samples to its group from its expression profile alone, without the performance estimate being inflated by information leakage?"
+  },
+  {
+    "objectID": "index.html#what-was-done",
+    "href": "index.html#what-was-done",
+    "title": "Can a Random Forest tell influenza-infected cells and TRIM28 genotypes apart?",
+    "section": "What was done",
+    "text": "What was done\n\n\n\n\n\nflowchart TB\n  A[\"GEO GSE133329: 12 count tables\"] --&gt; B[\"Gene filter: ≥ 10 counts in ≥ 3 samples\"]\n  B --&gt; C[\"Quality control&lt;br&gt;rlog, PCA, clustering\"]\n  B --&gt; D[\"DESeq2&lt;br&gt;genotype × infection\"]\n  B --&gt; F[\"Random Forest&lt;br&gt;nested leave-one-out CV\"]\n  D --&gt; E[\"Enrichment&lt;br&gt;g:Profiler\"]\n  F --&gt; G[\"Importance and&lt;br&gt;selection stability\"]\n  G --&gt; H[\"Candidate biomarkers\"]\n  D -. \"interpretation\" .-&gt; H\n\n\n\n\n\n\nThe experiment has a 2 × 2 design with three replicates per group: genotype (wt or 6KR) times infection (mock or IAV A/WSN/33, 6 hours). I first did this analysis during a four-week practical course, and afterwards I rebuilt it as a proper R pipeline of seven scripts, because I wanted to be sure that every number is right and that also someone else can run it again. So every number on these pages is read from the pipeline output when the site is built, and not typed in by hand."
+  },
+  {
+    "objectID": "index.html#what-came-out",
+    "href": "index.html#what-came-out",
+    "title": "Can a Random Forest tell influenza-infected cells and TRIM28 genotypes apart?",
+    "section": "What came out",
+    "text": "What came out\n\nInfection dominates the transcriptome. The first principal component, which separates infected from mock samples, carries 87.5 % of the variance, the genotype only 7.8 % (Data & QC).\nThe 6KR mutation amplifies the antiviral response. Genes with a higher infection response in 6KR cells are enriched for defence against viruses and type I interferon signalling, in line with the source study (Differential expression).\nHow the genes are selected decides what the Random Forest can learn. The planned model selected genes by their overall group difference, saw almost only infection genes, and confused the genotypes in 4 of 12 samples. Selecting genotype and infection genes separately classified all 12 samples correctly, but this rule was chosen after seeing the first result, so the estimate is optimistic (Random Forest).\nThe candidate genes mainly read out the TRIM28 state, among them five KRAB zinc-finger genes, while apparent infection markers such as RPL30 most likely reflect the virus-induced host shutoff.\n\n\n\n\n\n\n\nNoteScope of the result\n\n\n\nTwelve samples from one cell line, one virus strain and one time point: the candidates describe this experimental system and are not diagnostic biomarkers. The full discussion of limitations is in the report (PDF) and on the methods page."
+  },
+  {
+    "objectID": "index.html#who-did-this",
+    "href": "index.html#who-did-this",
+    "title": "Can a Random Forest tell influenza-infected cells and TRIM28 genotypes apart?",
+    "section": "Who did this?",
+    "text": "Who did this?\n\n\nHi, I’m Konrad. I did this project as part of a bioinformatics practical course at the Friedrich Schiller University Jena, and somehow it didn’t let me go afterwards, so I rebuilt the whole thing until I was happy with it. The part I find the most interesting is the Random Forest, because with only 12 samples you can fool yourself really easily, and I wanted to see what happens when you do it properly (spoiler: the accuracy goes down first, and then you learn something about your gene selection).\nIf you have questions, ideas or you found a mistake, feel free to let me know, I’m happy about every feedback :)\n\n\n\n\n\nMe, trying to keep the same overview over the night sky as over 13,483 genes."
+  },
+  {
+    "objectID": "data-qc.html",
+    "href": "data-qc.html",
+    "title": "Data and quality control",
+    "section": "",
+    "text": "The counts come from GEO series GSE133329, deposited with the study of Schmidt et al. (PNAS 2019). A TRIM28 knockout clone of A549 lung epithelial cells was reconstituted with wild-type TRIM28 (wt) or with TRIM28 6KR, a mutant whose six SUMOylation sites are replaced. Cells were mock treated or infected with IAV A/WSN/33 at a multiplicity of infection of 10 for 6 hours, with three replicates per group. The 12 count tables contain 21,386 genes.\nGenes were kept when they had at least 10 counts in at least 3 samples, 3 being the size of the smallest group. This keeps genes that are switched on in a single condition, and it uses no group labels, which matters later: the filter is applied once to all samples before the cross-validation of the Random Forest, so it must not carry label information into the test sample. The filter kept 13,483 of 21,386 genes."
+  },
+  {
+    "objectID": "data-qc.html#data",
+    "href": "data-qc.html#data",
+    "title": "Data and quality control",
+    "section": "",
+    "text": "The counts come from GEO series GSE133329, deposited with the study of Schmidt et al. (PNAS 2019). A TRIM28 knockout clone of A549 lung epithelial cells was reconstituted with wild-type TRIM28 (wt) or with TRIM28 6KR, a mutant whose six SUMOylation sites are replaced. Cells were mock treated or infected with IAV A/WSN/33 at a multiplicity of infection of 10 for 6 hours, with three replicates per group. The 12 count tables contain 21,386 genes.\nGenes were kept when they had at least 10 counts in at least 3 samples, 3 being the size of the smallest group. This keeps genes that are switched on in a single condition, and it uses no group labels, which matters later: the filter is applied once to all samples before the cross-validation of the Random Forest, so it must not carry label information into the test sample. The filter kept 13,483 of 21,386 genes."
+  },
+  {
+    "objectID": "data-qc.html#infection-separates-the-samples-first-the-genotype-second",
+    "href": "data-qc.html#infection-separates-the-samples-first-the-genotype-second",
+    "title": "Data and quality control",
+    "section": "Infection separates the samples first, the genotype second",
+    "text": "Infection separates the samples first, the genotype second\nCounts were transformed with the regularised logarithm (rlog) of DESeq2 in blind mode, so that no group information enters the transformation. On the 500 most variable genes, the first principal component separates infected from mock samples and carries 87.5 % of the variance, the second separates the genotypes (7.8 %). Hover over a point to see the sample.\n\n\n\n\nPrincipal component analysis of the 500 most variable genes after rlog transformation. Interactive: hover for sample name and library size, click a legend entry to hide a group.\n\n\n\n\n\nStudy design and sample structure. a, The 2 × 2 design. b, PCA as above. c, Euclidean distances between samples on all 13,483 filtered genes, clustered by average linkage; darker blue means more similar."
+  },
+  {
+    "objectID": "data-qc.html#is-there-an-outlier",
+    "href": "data-qc.html#is-there-an-outlier",
+    "title": "Data and quality control",
+    "section": "Is there an outlier?",
+    "text": "Is there an outlier?\n\n\nOn all filtered genes, the wt-infected replicates are further apart from each other (mean distance to their replicates 37.7–40.7) than the replicates of the other groups (11.8–26.4). These three samples also have the smallest libraries (3.6–7.5 million reads, against 9.1–46.6 million in the other groups) and the highest share of filtered genes with fewer than 5 counts (9.7–15.6 % against 1.6–6.8 %). The spread therefore most likely reflects noise in weakly expressed genes rather than a failed sample, and on the 500 most variable genes the four groups still form four separate clusters. All 12 samples were kept, and the noisier wt-infected group is named as a limitation.\n\n\n\n\n\nCounting reads. The wt-infected samples got only 3.6–7.5 million of them, which is still a few more than in this book.\n\n\n\n\n\n\n\n\n\n\nNoteLibrary sizes and expression distributions\n\n\n\n\n\n\n\n\na, Assigned reads per sample: all infected samples have smaller libraries than all mock samples. b, rlog expression per sample after filtering.\n\n\n\n\n\n\n\n\n\n\n\nNoteHierarchical clustering and scree plot\n\n\n\n\n\n\n\n\na, Average-linkage clustering of the samples on all filtered genes. b, Variance explained per principal component."
+  },
+  {
+    "objectID": "differential-expression.html",
+    "href": "differential-expression.html",
+    "title": "Differential expression",
+    "section": "",
+    "text": "All 12 samples were fitted in one DESeq2 model with the design ~ genotype + infection + genotype:infection and the reference levels wt and mock. The last term, the interaction, asks whether infection changes a gene differently in 6KR than in wt cells. From this single fit, five contrasts were extracted. Genes with a Benjamini-Hochberg adjusted p-value below 0.05 count as differentially expressed.\n\n\n\nDifferentially expressed genes per contrast (of 13,483 tested genes).\n\n\n\n\n\n\n\n\nContrast\nUp\nDown\nTotal\n\n\n\n\nInfected vs mock, in wt cells\n4,355\n4,190\n8,545\n\n\nInfected vs mock, in 6KR cells\n4,384\n4,370\n8,754\n\n\n6KR vs wt, in mock cells\n980\n495\n1,475\n\n\n6KR vs wt, in infected cells\n1,009\n845\n1,854\n\n\nInteraction: infection effect in 6KR minus infection effect in wt\n43\n52\n95\n\n\n\n\n\n\n\nInfection changes more than half of all tested genes, the genotype alone far fewer. Classical interferon-stimulated genes are strongly induced in wt cells, for example OASL (shrunken log2 fold change 5.5), whereas IFNB1 itself is not significantly induced in wt cells at 6 hours (adjusted p = 0.12), in line with the block of interferon-β induction by the viral protein NS1.\n\n\n\n\n\nHarvesting differentially expressed genes. In the end there were 8,545 of them in wt cells alone, so a little bit more than on this grape."
+  },
+  {
+    "objectID": "differential-expression.html#one-model-five-questions",
+    "href": "differential-expression.html#one-model-five-questions",
+    "title": "Differential expression",
+    "section": "",
+    "text": "All 12 samples were fitted in one DESeq2 model with the design ~ genotype + infection + genotype:infection and the reference levels wt and mock. The last term, the interaction, asks whether infection changes a gene differently in 6KR than in wt cells. From this single fit, five contrasts were extracted. Genes with a Benjamini-Hochberg adjusted p-value below 0.05 count as differentially expressed.\n\n\n\nDifferentially expressed genes per contrast (of 13,483 tested genes).\n\n\n\n\n\n\n\n\nContrast\nUp\nDown\nTotal\n\n\n\n\nInfected vs mock, in wt cells\n4,355\n4,190\n8,545\n\n\nInfected vs mock, in 6KR cells\n4,384\n4,370\n8,754\n\n\n6KR vs wt, in mock cells\n980\n495\n1,475\n\n\n6KR vs wt, in infected cells\n1,009\n845\n1,854\n\n\nInteraction: infection effect in 6KR minus infection effect in wt\n43\n52\n95\n\n\n\n\n\n\n\nInfection changes more than half of all tested genes, the genotype alone far fewer. Classical interferon-stimulated genes are strongly induced in wt cells, for example OASL (shrunken log2 fold change 5.5), whereas IFNB1 itself is not significantly induced in wt cells at 6 hours (adjusted p = 0.12), in line with the block of interferon-β induction by the viral protein NS1.\n\n\n\n\n\nHarvesting differentially expressed genes. In the end there were 8,545 of them in wt cells alone, so a little bit more than on this grape."
+  },
+  {
+    "objectID": "differential-expression.html#explore-the-volcano-plots",
+    "href": "differential-expression.html#explore-the-volcano-plots",
+    "title": "Differential expression",
+    "section": "Explore the volcano plots",
+    "text": "Explore the volcano plots\nI’d say the volcano plots are the most fun part of this page, because you can play around with them: hover over a point and you see the gene, drag to zoom in, and double-click to get back. Each point is one gene, the x-axis shows the fold change and the y-axis how significant it is. The fold changes are shrunk with ashr, which pulls large but noisy fold changes of weakly expressed genes towards zero, so the plots don’t get dominated by genes with only a few reads.\n\nInfection in wt cellsInteraction6KR vs wt, mock cells"
+  },
+  {
+    "objectID": "differential-expression.html#what-does-interaction-up-mean",
+    "href": "differential-expression.html#what-does-interaction-up-mean",
+    "title": "Differential expression",
+    "section": "What does “interaction up” mean?",
+    "text": "What does “interaction up” mean?\nA positive interaction means that the infection effect is higher in 6KR than in wt cells. That can be a stronger induction, but also a weaker repression. Of the 43 interaction-up genes, 28 were induced by infection in 6KR cells and 15 were repressed in wt cells and less so in 6KR cells. The interaction-up genes include interferon-stimulated genes such as IRF1, IFIT3, IFI16 and USP18, which fits the model of the source study: loss of SUMO-modified TRIM28 derepresses endogenous retroviruses, whose double-stranded RNA adds to the viral stimulus.\n\n\n\n\n\n\nNoteHeatmap of the 50 most significant interaction genes\n\n\n\n\n\n\n\n\nrlog expression, scaled per gene (z-score). The upper cluster contains the interferon-stimulated genes that are highest in infected 6KR cells, the lower cluster the ER-stress genes such as HERPUD1 and HSPA5."
+  },
+  {
+    "objectID": "differential-expression.html#which-processes-are-affected",
+    "href": "differential-expression.html#which-processes-are-affected",
+    "title": "Differential expression",
+    "section": "Which processes are affected?",
+    "text": "Which processes are affected?\nOver-representation analysis with g:Profiler tested the up- and down-regulated gene lists against GO Biological Process, KEGG and Reactome, with all tested genes as background.\n\n\n\nFive most significant terms per source for a, genes induced by infection in wt cells; b, interaction-up genes; c, genes up-regulated in mock 6KR vs wt cells. Colour gives the −log10 adjusted p-value, point size the number of list genes in the term.\n\n\n\nInteraction-up genes are enriched for antiviral defence. The 43 interaction-up genes gave 156 terms, led by defence response to other organisms and to viruses and type I interferon signalling (adjusted p = 1.1^{-14} for “defense response to virus”).\nGenotype markers point to TRIM28 function. The 352 genes up in uninfected 6KR cells are enriched for cell adhesion, and Reactome lists “Regulation of endogenous retroelements by KRAB-ZFP proteins”, the gene family that recruits TRIM28.\nThe infection list is led by ribosome and oxidative phosphorylation terms, not by interferon. 71 of 77 cytosolic ribosomal protein genes are in it, while “Interferon alpha/beta signaling” only ranks at position 104. This most likely reflects the virus-induced host shutoff: IAV degrades most host mRNAs, transcripts that resist it then appear induced after normalisation, so their increase is relative rather than absolute.\n\n\n\n\n\n\n\nNoteDown-regulated gene lists\n\n\n\n\n\n\n\n\na, Genes repressed by infection in wt cells (cell cycle, DNA replication and repair). b, Genes down in mock 6KR vs wt cells. c, Interaction-down genes (unfolded protein response)."
+  },
+  {
+    "objectID": "methods.html",
+    "href": "methods.html",
+    "title": "Methods and reproducibility",
+    "section": "",
+    "text": "The analysis is a set of seven numbered R scripts that each read their input from disk and write their output to disk; run_all.R runs them in order and records the session.\n\nPipeline scripts in execution order.\n\n\n\n\n\n\nScript\nStep\n\n\n\n\n01_build_count_matrix.R\ncount matrix and sample table from the GEO files\n\n\n02_qc_exploration.R\ngene filter, rlog, PCA, sample distances, outlier check\n\n\n03_differential_expression.R\nDESeq2 interaction model, five contrasts, ashr shrinkage\n\n\n04_enrichment.R\nover-representation analysis with g:Profiler\n\n\n05_random_forest.R\nfour-class Random Forest, nested leave-one-out cross-validation\n\n\n06_biomarker_summary.R\ncandidate table from importance and selection stability\n\n\n07_report_figures.R\ncomposite figures for the report and this site\n\n\n\nKey settings. Gene filter: at least 10 counts in at least 3 samples. DESeq2 design ~ genotype + infection + genotype:infection, references wt and mock, Benjamini-Hochberg adjusted p &lt; 0.05. Over-representation analysis: up and down lists separately, |shrunken log2 fold change| &gt; 1 for the two large contrasts, all tested genes as background, terms with 10 to 1,000 genes. Random Forest: 1,000 trees, default number of candidate genes per split, 50 genes per fold (20 and 200 as a descriptive check), seed 42 plus the fold index."
+  },
+  {
+    "objectID": "methods.html#pipeline",
+    "href": "methods.html#pipeline",
+    "title": "Methods and reproducibility",
+    "section": "",
+    "text": "The analysis is a set of seven numbered R scripts that each read their input from disk and write their output to disk; run_all.R runs them in order and records the session.\n\nPipeline scripts in execution order.\n\n\n\n\n\n\nScript\nStep\n\n\n\n\n01_build_count_matrix.R\ncount matrix and sample table from the GEO files\n\n\n02_qc_exploration.R\ngene filter, rlog, PCA, sample distances, outlier check\n\n\n03_differential_expression.R\nDESeq2 interaction model, five contrasts, ashr shrinkage\n\n\n04_enrichment.R\nover-representation analysis with g:Profiler\n\n\n05_random_forest.R\nfour-class Random Forest, nested leave-one-out cross-validation\n\n\n06_biomarker_summary.R\ncandidate table from importance and selection stability\n\n\n07_report_figures.R\ncomposite figures for the report and this site\n\n\n\nKey settings. Gene filter: at least 10 counts in at least 3 samples. DESeq2 design ~ genotype + infection + genotype:infection, references wt and mock, Benjamini-Hochberg adjusted p &lt; 0.05. Over-representation analysis: up and down lists separately, |shrunken log2 fold change| &gt; 1 for the two large contrasts, all tested genes as background, terms with 10 to 1,000 genes. Random Forest: 1,000 trees, default number of candidate genes per split, 50 genes per fold (20 and 200 as a descriptive check), seed 42 plus the fold index."
+  },
+  {
+    "objectID": "methods.html#software",
+    "href": "methods.html#software",
+    "title": "Methods and reproducibility",
+    "section": "Software",
+    "text": "Software\nR 4.5.3 with DESeq2 1.50.2, ashr 2.2.63, gprofiler2 0.2.4 (database version e114_eg62_p19_27110d83), randomForest 4.7.1.2, ggplot2 4.0.2 and plotly 4.12.0. Package versions are recorded in an renv lockfile, and the report and this site are built with Quarto."
+  },
+  {
+    "objectID": "methods.html#reproducibility",
+    "href": "methods.html#reproducibility",
+    "title": "Methods and reproducibility",
+    "section": "Reproducibility",
+    "text": "Reproducibility\n\nOne command rebuilds every result from the GEO files: Rscript run_all.R (about 5 minutes).\nA fresh run was compared with the previous outputs: all result tables were identical, and the only figure differences, the label positions of the volcano plots, were removed by fixing the seed of the label placement.\nNo number is typed by hand. The report and these pages read every number from results/ when they are built.\nThe gene selection is guarded against leakage: the Random Forest script stops if the left-out sample enters the DESeq2 fit of its fold.\n\n# from the project root, after renv::restore()\nRscript run_all.R"
+  },
+  {
+    "objectID": "methods.html#what-changed-compared-with-the-course-analysis",
+    "href": "methods.html#what-changed-compared-with-the-course-analysis",
+    "title": "Methods and reproducibility",
+    "section": "What changed compared with the course analysis",
+    "text": "What changed compared with the course analysis\n\n\nI did the analysis first during the practical course, and when I rebuilt it later I found two problems in the first version, which are fixed now. The first one was a bit embarrassing, but I guess that is exactly how you learn to always check the reference levels:\n\nReference levels of the DESeq2 model. The factors had not been relevelled, so the alphabetical references (6KR, infected) were used, and the contrasts called “infection” and “genotype” in fact described the infection effect in 6KR cells and the genotype effect in infected cells.\nResampling of the Random Forest. Repeated 60/40 splits left four test samples per split, so the accuracy could only take the values 0, 0.25, 0.5, 0.75 and 1 and changed with every seed, and in some runs the feature elimination saw all samples before splitting. Nested leave-one-out cross-validation with the gene selection inside every fold avoids both.\n\n\n\n\n\n\nMe, back on course after the reference levels were fixed and the fresh run reproduced every result file."
+  },
+  {
+    "objectID": "methods.html#limitations",
+    "href": "methods.html#limitations",
+    "title": "Methods and reproducibility",
+    "section": "Limitations",
+    "text": "Limitations\n\nTwelve samples, three per group, from one cell line (A549), one virus strain, one high multiplicity of infection and one time point: the candidates describe this experimental system, not a patient population.\nEach genotype is one lentivirally reconstituted population of the same knockout clone, so the genotype effect can also contain differences between the two populations, for example in transgene expression.\nThe wt-infected libraries were the smallest, which increases the noise of weakly expressed genes in this group.\nModel 2 is likely optimistic, because its gene-selection rule was chosen after the Model 1 result on the same samples.\nHost shutoff distorts the normalisation: transcripts that resist the virus-induced mRNA degradation appear induced, so infection fold changes are relative.\nEndogenous retroviruses, the main topic of the source study, could not be examined, because the deposited count tables contain only annotated genes."
+  },
+  {
+    "objectID": "methods.html#full-report-and-key-references",
+    "href": "methods.html#full-report-and-key-references",
+    "title": "Methods and reproducibility",
+    "section": "Full report and key references",
+    "text": "Full report and key references\nThe full report (PDF) contains all methods, results, the discussion and 22 references. Key references for this site:\n\nSchmidt N et al. An influenza virus-triggered SUMO switch orchestrates co-opted endogenous retroviruses to stimulate host antiviral immunity. PNAS 2019. doi:10.1073/pnas.1907031116\nLove MI, Huber W, Anders S. Moderated estimation of fold change and dispersion for RNA-seq data with DESeq2. Genome Biol 2014. doi:10.1186/s13059-014-0550-8\nBreiman L. Random forests. Mach Learn 2001. doi:10.1023/A:1010933404324\nAmbroise C, McLachlan GJ. Selection bias in gene extraction on the basis of microarray gene-expression data. PNAS 2002. doi:10.1073/pnas.102102699\nVarma S, Simon R. Bias in error estimation when using cross-validation for model selection. BMC Bioinformatics 2006. doi:10.1186/1471-2105-7-91\nKolberg L et al. g:Profiler — interoperable web service for functional enrichment analysis and gene identifier mapping (2023 update). Nucleic Acids Res 2023. doi:10.1093/nar/gkad347"
+  }
+]
