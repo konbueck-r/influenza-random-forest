@@ -1,0 +1,140 @@
+---
+title: "Differential expression"
+subtitle: "Which genes respond to infection, to the TRIM28 genotype, and to both together?"
+---
+
+```{r}
+#| label: setup
+source("_common.R")
+gene <- function(contrast, symbol_name, column) {
+  deg[[contrast]][[column]][match(symbol_name, deg[[contrast]]$symbol)]
+}
+interaction_up_ids <- deg$interaction[direction == "up", gene_id]
+n_up_induced_6kr <- sum(deg$infection_6KR[match(interaction_up_ids, gene_id), log2FC] > 0)
+ora_terms <- function(q) ora_counts[query == q, `GO:BP` + KEGG + REAC]
+ora_n <- function(q) ora_counts[query == q, n_genes]
+ora_padj <- function(q, term) ora[query == q & term_name == term, p_adj][1]
+ifn_rank <- ora[query == "infection_wt_up", which(term_name == "Interferon alpha/beta signaling")]
+infection_up <- deg$infection_wt[direction == "up" & log2FC_shrunk > 1]
+symbols_wt <- deg$infection_wt$symbol
+is_rp <- grepl("^(RP[LS][0-9]+[AX]?|RPLP[0-2]|RPSA)$", symbols_wt)
+n_rp_up <- sum(deg$infection_wt$gene_id[is_rp] %in% infection_up$gene_id)
+```
+
+## One model, five questions
+
+All 12 samples were fitted in one DESeq2 model with the design
+`~ genotype + infection + genotype:infection` and the reference levels wt and mock. The last term,
+the **interaction**, asks whether infection changes a gene differently in 6KR than in wt cells.
+From this single fit, five contrasts were extracted. Genes with a Benjamini-Hochberg adjusted
+p-value below 0.05 count as differentially expressed.
+
+```{r}
+#| label: deg-table
+contrast_text <- c(
+  infection_wt = "Infected vs mock, in wt cells",
+  infection_6KR = "Infected vs mock, in 6KR cells",
+  genotype_mock = "6KR vs wt, in mock cells",
+  genotype_infected = "6KR vs wt, in infected cells",
+  interaction = "Interaction: infection effect in 6KR minus infection effect in wt"
+)
+knitr::kable(
+  data.frame(Contrast = contrast_text[deg_counts$contrast],
+             Up = n(deg_counts$up), Down = n(deg_counts$down),
+             Total = n(deg_counts$significant)),
+  row.names = FALSE, align = "lrrr",
+  caption = sprintf("Differentially expressed genes per contrast (of %s tested genes).",
+                    n(n_tested))
+)
+```
+
+::: {.grid}
+
+::: {.g-col-12 .g-col-md-8}
+**Infection changes more than half of all tested genes**, the genotype alone far fewer. Classical
+interferon-stimulated genes are strongly induced in wt cells, for example OASL (shrunken log2 fold
+change `r f1(gene("infection_wt", "OASL", "log2FC_shrunk"))`), whereas IFNB1 itself is not
+significantly induced in wt cells at 6 hours (adjusted p =
+`r signif(gene("infection_wt", "IFNB1", "padj"), 2)`), in line with the block of interferon-β
+induction by the viral protein NS1.
+:::
+
+::: {.g-col-12 .g-col-md-4}
+![Harvesting differentially expressed genes. In the end there were `r n(dc("infection_wt", "significant"))` of them in wt cells alone, so a little bit more than on this grape.](images/wine_me.jpg){.photo fig-alt="Konrad eating a bunch of red grapes in a vineyard"}
+:::
+
+:::
+
+## Explore the volcano plots
+
+I'd say the volcano plots are the most fun part of this page, because you can play around with
+them: hover over a point and you see the gene, drag to zoom in, and double-click to get back.
+Each point is one gene, the x-axis shows the fold change and the y-axis how significant it is.
+The fold changes are shrunk with ashr, which pulls large but noisy fold changes of weakly
+expressed genes towards zero, so the plots don't get dominated by genes with only a few reads.
+
+::: {.panel-tabset}
+
+## Infection in wt cells
+
+```{r}
+#| label: volcano-infection
+plot_volcano("infection_wt", "log2 fold change, infected vs mock (shrunken)")
+```
+
+## Interaction
+
+```{r}
+#| label: volcano-interaction
+plot_volcano("interaction", "interaction log2 fold change, 6KR minus wt (shrunken)")
+```
+
+## 6KR vs wt, mock cells
+
+```{r}
+#| label: volcano-genotype
+plot_volcano("genotype_mock", "log2 fold change, 6KR vs wt in mock cells (shrunken)")
+```
+
+:::
+
+## What does "interaction up" mean?
+
+A positive interaction means that the infection effect is **higher in 6KR than in wt cells**. That
+can be a stronger induction, but also a weaker repression. Of the
+`r dc("interaction", "up")` interaction-up genes, `r n_up_induced_6kr` were induced by infection in
+6KR cells and `r dc("interaction", "up") - n_up_induced_6kr` were repressed in wt cells and less so
+in 6KR cells. The interaction-up genes include interferon-stimulated genes such as IRF1, IFIT3,
+IFI16 and USP18, which fits the model of the source study: loss of SUMO-modified TRIM28
+derepresses endogenous retroviruses, whose double-stranded RNA adds to the viral stimulus.
+
+::: {.callout-note collapse="true"}
+## Heatmap of the 50 most significant interaction genes
+![rlog expression, scaled per gene (z-score). The upper cluster contains the interferon-stimulated genes that are highest in infected 6KR cells, the lower cluster the ER-stress genes such as HERPUD1 and HSPA5.](assets/figures/heatmap_interaction_top_genes.png){fig-alt="Heatmap of 50 interaction genes across 12 samples" width="75%"}
+:::
+
+## Which processes are affected?
+
+Over-representation analysis with g:Profiler tested the up- and down-regulated gene lists against
+GO Biological Process, KEGG and Reactome, with all tested genes as background.
+
+![Five most significant terms per source for **a**, genes induced by infection in wt cells; **b**, interaction-up genes; **c**, genes up-regulated in mock 6KR vs wt cells. Colour gives the −log10 adjusted p-value, point size the number of list genes in the term.](assets/figures/figure_3.png){fig-alt="Dot plots of enriched terms for three gene lists" width="85%"}
+
+- **Interaction-up genes are enriched for antiviral defence.** The
+  `r ora_n("interaction_up")` interaction-up genes gave `r ora_terms("interaction_up")` terms, led by
+  defence response to other organisms and to viruses and type I interferon signalling (adjusted p =
+  `r signif(ora_padj("interaction_up", "defense response to virus"), 2)` for "defense response to
+  virus").
+- **Genotype markers point to TRIM28 function.** The `r ora_n("genotype_mock_up")` genes up in
+  uninfected 6KR cells are enriched for cell adhesion, and Reactome lists "Regulation of endogenous
+  retroelements by KRAB-ZFP proteins", the gene family that recruits TRIM28.
+- **The infection list is led by ribosome and oxidative phosphorylation terms, not by
+  interferon.** `r n_rp_up` of `r sum(is_rp)` cytosolic ribosomal protein genes are in it, while
+  "Interferon alpha/beta signaling" only ranks at position `r ifn_rank`. This most likely reflects
+  the virus-induced host shutoff: IAV degrades most host mRNAs, transcripts that resist it then
+  appear induced after normalisation, so their increase is relative rather than absolute.
+
+::: {.callout-note collapse="true"}
+## Down-regulated gene lists
+![**a**, Genes repressed by infection in wt cells (cell cycle, DNA replication and repair). **b**, Genes down in mock 6KR vs wt cells. **c**, Interaction-down genes (unfolded protein response).](assets/figures/supplementary_5.png){fig-alt="Dot plots of enriched terms for three down-regulated gene lists" width="85%"}
+:::

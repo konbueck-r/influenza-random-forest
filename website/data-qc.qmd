@@ -1,0 +1,91 @@
+---
+title: "Data and quality control"
+subtitle: "Do the samples group as expected?"
+---
+
+```{r}
+#| label: setup
+source("_common.R")
+lib_million <- colSums(counts_raw) / 1e6
+wt_inf <- grepl("^wt_infected", names(lib_million))
+repl <- qc[, .(lo = min(mean_dist_replicates), hi = max(mean_dist_replicates)),
+           by = .(wt_inf = group == "wt_infected")]
+low <- qc[, .(lo = min(share_filtered_genes_below_5_counts),
+              hi = max(share_filtered_genes_below_5_counts)),
+          by = .(wt_inf = group == "wt_infected")]
+```
+
+## Data
+
+The counts come from GEO series
+[GSE133329](https://www.ncbi.nlm.nih.gov/geo/query/acc.cgi?acc=GSE133329), deposited with the
+study of Schmidt et al. ([PNAS 2019](https://doi.org/10.1073/pnas.1907031116)). A TRIM28 knockout
+clone of A549 lung epithelial cells was reconstituted with wild-type TRIM28 (wt) or with TRIM28 6KR,
+a mutant whose six SUMOylation sites are replaced. Cells were mock treated or infected with IAV
+A/WSN/33 at a multiplicity of infection of 10 for 6 hours, with three replicates per group. The
+12 count tables contain `r n(nrow(counts_raw))` genes.
+
+**Genes were kept when they had at least 10 counts in at least 3 samples**, 3 being the size of the
+smallest group. This keeps genes that are switched on in a single condition, and it uses no group
+labels, which matters later: the filter is applied once to all samples before the
+cross-validation of the Random Forest, so it must not carry label information into the test
+sample. The filter kept `r n(n_tested)` of `r n(nrow(counts_raw))` genes.
+
+## Infection separates the samples first, the genotype second
+
+Counts were transformed with the regularised logarithm (rlog) of DESeq2 in blind mode, so that no
+group information enters the transformation. On the 500 most variable genes, the first principal
+component separates infected from mock samples and carries `r f1(pca_var[1])` % of the variance,
+the second separates the genotypes (`r f1(pca_var[2])` %). Hover over a point to see the sample.
+
+```{r}
+#| label: pca
+#| fig-cap: "Principal component analysis of the 500 most variable genes after rlog transformation. Interactive: hover for sample name and library size, click a legend entry to hide a group."
+pca <- copy(qc)
+pca[, group_label := factor(GROUP_LABELS[group], levels = GROUP_LABELS)]
+pca[, hover := sprintf("<b>%s</b><br>%.1f million reads", sample, library_size / 1e6)]
+plot_ly(pca, x = ~PC1, y = ~PC2, color = ~group_label, colors = unname(GROUP_COLOURS),
+        text = ~hover, hoverinfo = "text", type = "scatter", mode = "markers",
+        marker = list(size = 13, line = list(width = 1, color = "white"))) |>
+  layout(xaxis = list(title = sprintf("PC1 (%.1f %% variance)", pca_var[1])),
+         yaxis = list(title = sprintf("PC2 (%.1f %% variance)", pca_var[2])),
+         legend = list(title = list(text = "Group"))) |>
+  config(displaylogo = FALSE)
+```
+
+![Study design and sample structure. **a**, The 2 × 2 design. **b**, PCA as above. **c**, Euclidean distances between samples on all `r n(n_tested)` filtered genes, clustered by average linkage; darker blue means more similar.](assets/figures/figure_1.png){fig-alt="Design table, PCA and sample distance heatmap" width="90%"}
+
+## Is there an outlier?
+
+::: {.grid}
+
+::: {.g-col-12 .g-col-md-8}
+On all filtered genes, the wt-infected replicates are further apart from each other (mean distance
+to their replicates `r f1(repl[wt_inf == TRUE, lo])`–`r f1(repl[wt_inf == TRUE, hi])`) than the
+replicates of the other groups (`r f1(repl[wt_inf == FALSE, lo])`–`r f1(repl[wt_inf == FALSE, hi])`).
+These three samples also have the smallest libraries
+(`r f1(min(lib_million[wt_inf]))`–`r f1(max(lib_million[wt_inf]))` million reads, against
+`r f1(min(lib_million[!wt_inf]))`–`r f1(max(lib_million[!wt_inf]))` million in the other groups) and
+the highest share of filtered genes with fewer than 5 counts
+(`r f1(100 * low[wt_inf == TRUE, lo])`–`r f1(100 * low[wt_inf == TRUE, hi])` % against
+`r f1(100 * low[wt_inf == FALSE, lo])`–`r f1(100 * low[wt_inf == FALSE, hi])` %). **The spread therefore most
+likely reflects noise in weakly expressed genes rather than a failed sample**, and on the 500 most
+variable genes the four groups still form four separate clusters. All 12 samples were kept, and the
+noisier wt-infected group is named as a limitation.
+:::
+
+::: {.g-col-12 .g-col-md-4}
+![Counting reads. The wt-infected samples got only `r f1(min(lib_million[wt_inf]))`–`r f1(max(lib_million[wt_inf]))` million of them, which is still a few more than in this book.](images/reading_me.jpg){.photo fig-alt="Konrad reading a book with coloured sticky notes"}
+:::
+
+:::
+
+::: {.callout-note collapse="true"}
+## Library sizes and expression distributions
+![**a**, Assigned reads per sample: all infected samples have smaller libraries than all mock samples. **b**, rlog expression per sample after filtering.](assets/figures/supplementary_1.png){fig-alt="Library sizes and rlog box plots per sample"}
+:::
+
+::: {.callout-note collapse="true"}
+## Hierarchical clustering and scree plot
+![**a**, Average-linkage clustering of the samples on all filtered genes. **b**, Variance explained per principal component.](assets/figures/supplementary_2.png){fig-alt="Dendrogram of the 12 samples and scree plot"}
+:::

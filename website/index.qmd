@@ -1,0 +1,118 @@
+---
+title: "Can a Random Forest tell influenza-infected cells and TRIM28 genotypes apart?"
+subtitle: "RNA-seq of influenza A virus-infected A549 cells, analysed with DESeq2 and a nested cross-validated Random Forest"
+toc: false
+---
+
+```{r}
+#| label: setup
+source("_common.R")
+n_cand <- nrow(candidates)
+n_cand_genotype <- sum(candidates$dominant_effect == "genotype")
+```
+
+This project reanalyses a published RNA-seq experiment on influenza A virus (IAV) infection. Lung
+epithelial cells (A549) carried either the normal host protein TRIM28 (wild type, **wt**) or a
+mutant that cannot be modified by SUMO (**6KR**), and were either mock treated or infected. Two
+questions were asked: which genes respond to infection and to the TRIM28 genotype, and can a
+Random Forest classifier assign each of the 12 samples to its group from its expression profile
+alone, without the performance estimate being inflated by information leakage?
+
+::: {.grid}
+
+::: {.g-col-12 .g-col-md-3}
+::: {.key-box}
+[`r n(dc("infection_wt", "significant"))`]{.key-number}\
+[of `r n(n_tested)` genes changed by infection in wt cells]{.key-label}
+:::
+:::
+
+::: {.g-col-12 .g-col-md-3}
+::: {.key-box}
+[`r n(dc("interaction", "significant"))`]{.key-number}\
+[genes whose infection response differs between the genotypes]{.key-label}
+:::
+:::
+
+::: {.g-col-12 .g-col-md-3}
+::: {.key-box}
+[`r m1$correct`/12 → `r m2$correct`/12]{.key-number}\
+[samples classified correctly, planned vs design-aware Random Forest]{.key-label}
+:::
+:::
+
+::: {.g-col-12 .g-col-md-3}
+::: {.key-box}
+[`r n_cand`]{.key-number}\
+[candidate genes, `r n_cand_genotype` of them genotype markers]{.key-label}
+:::
+:::
+
+:::
+
+## What was done
+
+```{mermaid}
+flowchart TB
+  A["GEO GSE133329: 12 count tables"] --> B["Gene filter: ≥ 10 counts in ≥ 3 samples"]
+  B --> C["Quality control<br>rlog, PCA, clustering"]
+  B --> D["DESeq2<br>genotype × infection"]
+  B --> F["Random Forest<br>nested leave-one-out CV"]
+  D --> E["Enrichment<br>g:Profiler"]
+  F --> G["Importance and<br>selection stability"]
+  G --> H["Candidate biomarkers"]
+  D -. "interpretation" .-> H
+```
+
+The experiment has a 2 × 2 design with three replicates per group: genotype (wt or 6KR) times
+infection (mock or IAV A/WSN/33, 6 hours). I first did this analysis during a four-week practical
+course, and afterwards I rebuilt it as a proper R pipeline of seven scripts, because I wanted to be
+sure that every number is right and that also someone else can run it again. So every number on
+these pages is read from the pipeline output when the site is built, and not typed in by hand.
+
+## What came out
+
+- **Infection dominates the transcriptome.** The first principal component, which separates
+  infected from mock samples, carries `r f1(pca_var[1])` % of the variance, the genotype only
+  `r f1(pca_var[2])` % ([Data & QC](data-qc.qmd)).
+- **The 6KR mutation amplifies the antiviral response.** Genes with a higher infection response in
+  6KR cells are enriched for defence against viruses and type I interferon signalling, in line
+  with the source study ([Differential expression](differential-expression.qmd)).
+- **How the genes are selected decides what the Random Forest can learn.** The planned model
+  selected genes by their overall group difference, saw almost only infection genes, and
+  confused the genotypes in `r 12 - m1$correct` of 12 samples. Selecting genotype and infection genes
+  separately classified all 12 samples correctly, but this rule was chosen after seeing the first
+  result, so the estimate is optimistic ([Random Forest](random-forest.qmd)).
+- **The candidate genes mainly read out the TRIM28 state**, among them five KRAB zinc-finger genes,
+  while apparent infection markers such as RPL30 most likely reflect the virus-induced host
+  shutoff.
+
+::: {.callout-note}
+## Scope of the result
+Twelve samples from one cell line, one virus strain and one time point: the candidates describe
+this experimental system and are not diagnostic biomarkers. The full discussion of limitations is
+in the [report (PDF)](assets/influenza_rf_biomarkers_report.pdf) and on the
+[methods page](methods.qmd).
+:::
+
+## Who did this?
+
+::: {.grid}
+
+::: {.g-col-12 .g-col-md-8}
+Hi, I'm Konrad. I did this project as part of a bioinformatics practical course at the Friedrich
+Schiller University Jena, and somehow it didn't let me go afterwards, so I rebuilt the whole thing
+until I was happy with it. The part I find the most interesting is the Random Forest, because with
+only 12 samples you can fool yourself really easily, and I wanted to see what happens when you do
+it properly (spoiler: the accuracy goes down first, and then you learn something about your gene
+selection).
+
+If you have questions, ideas or you found a mistake, feel free to let me know, I'm happy about
+every feedback :)
+:::
+
+::: {.g-col-12 .g-col-md-4}
+![Me, trying to keep the same overview over the night sky as over `r n(n_tested)` genes.](images/milky_way_me.jpg){.photo fig-alt="Konrad sitting in front of the Milky Way at night"}
+:::
+
+:::

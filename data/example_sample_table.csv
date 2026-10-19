@@ -1,0 +1,13 @@
+"sample","gsm","title","genotype","infection","group","replicate"
+"wt_mock_1","GSM3905824","wt_TR28_mock_I","wt","mock","wt_mock",1
+"wt_mock_2","GSM3905825","wt_TR28_mock_II","wt","mock","wt_mock",2
+"wt_mock_3","GSM3905826","wt_TR28_mock_III","wt","mock","wt_mock",3
+"wt_infected_1","GSM3905827","wt_TR28_MOI10_I","wt","infected","wt_infected",1
+"wt_infected_2","GSM3905828","wt_TR28_MOI10_II","wt","infected","wt_infected",2
+"wt_infected_3","GSM3905829","wt_TR28_MOI10_III","wt","infected","wt_infected",3
+"6KR_mock_1","GSM3905830","TR28_6KR_mock_I","6KR","mock","6KR_mock",1
+"6KR_mock_2","GSM3905831","TR28_6KR_mock_II","6KR","mock","6KR_mock",2
+"6KR_mock_3","GSM3905832","TR28_6KR_mock_III","6KR","mock","6KR_mock",3
+"6KR_infected_1","GSM3905833","TR28_6KR_MOI10_I","6KR","infected","6KR_infected",1
+"6KR_infected_2","GSM3905834","TR28_6KR_MOI10_II","6KR","infected","6KR_infected",2
+"6KR_infected_3","GSM3905835","TR28_6KR_MOI10_III","6KR","infected","6KR_infected",3

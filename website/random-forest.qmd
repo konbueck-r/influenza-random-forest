@@ -1,0 +1,182 @@
+---
+title: "Random Forest classification"
+subtitle: "How well can 12 samples be classified, and what decides it?"
+---
+
+```{r}
+#| label: setup
+source("_common.R")
+m1_pred <- rf_pred[model == "group_lrt" & n_features == 50]
+m1_errors <- m1_pred[truth != predicted]
+m1_errors$votes_predicted <- sapply(seq_len(nrow(m1_errors)),
+                                    function(i) m1_errors[[m1_errors$predicted[i]]][i])
+significant_in <- function(contrast_names) {
+  unique(unlist(lapply(contrast_names, function(x) deg[[x]][direction != "ns", gene_id])))
+}
+m1_genes <- importance[model == "group_lrt", gene_id]
+m1_infection <- sum(m1_genes %in% significant_in(c("infection_wt", "infection_6KR")))
+m1_genotype <- sum(m1_genes %in% significant_in("genotype_mock"))
+oasl_folds <- stability[model == "factor_balanced" & symbol == "OASL", folds_selected]
+```
+
+## What a Random Forest does
+
+A Random Forest is a collection of decision trees. Each tree is grown on a bootstrap sample of the
+training samples and, at every split, may only choose among a random subset of the genes. A new
+sample is classified by letting all trees vote, and **the share of votes for each class is a
+built-in measure of how confident the forest is**. Here, 1,000 trees per forest classified the four
+groups (wt mock, wt infected, 6KR mock, 6KR infected) from rlog expression values. Random Forests
+suit expression data because they still work with thousands of genes and few samples, handle more
+than two classes directly, and rank genes by their importance: how much the accuracy drops when the
+values of one gene are randomly permuted.
+
+## Why the gene selection has to happen inside the cross-validation
+
+With 12 samples there is no separate test set, so performance is estimated by leave-one-out
+cross-validation (LOOCV): each sample is predicted once by a forest built on the other 11. The trap
+is the gene selection. Choosing the "best" genes on all 12 samples and then cross-validating only
+the forest lets the test sample influence which genes the model sees, and the estimate becomes
+optimistic, a selection bias described by Ambroise and McLachlan
+([PNAS 2002](https://doi.org/10.1073/pnas.102102699)). **Therefore the DESeq2 gene selection was
+repeated inside every fold, on the 11 training samples only**, and the pipeline stops with an error
+if the left-out sample ever enters a fold's DESeq2 fit.
+
+```{mermaid}
+flowchart TB
+  A["12 samples"] --> B["Leave one sample out<br>(repeated for each of the 12)"]
+  B --> C["11 training samples"]
+  B --> T["1 test sample"]
+  C --> D["DESeq2 on the 11 samples only<br>→ top 50 genes"]
+  D --> F["Random Forest, 1,000 trees"]
+  F --> P["Predict the test sample"]
+  T --> P
+  P --> R["12 out-of-fold predictions → accuracy"]
+```
+
+The gene filter and the blind rlog transformation use no group labels, so they were computed once
+for all samples without leaking class information.
+
+## The planned model: `r m1$correct` of 12
+
+Model 1 selected, in every fold, the 50 genes with the smallest p-value in a DESeq2
+likelihood-ratio test of the four-group model against a model without groups. It classified
+`r m1$correct` of 12 samples correctly (accuracy `r f2(m1$accuracy)`, 95 % confidence interval
+`r f2(m1$accuracy_ci_lower)`–`r f2(m1$accuracy_ci_upper)`), clearly above the 3 of 12 expected by
+chance (Benjamini-Hochberg adjusted p = `r signif(m1$p_vs_chance_bh, 2)`). Infected and mock samples
+were separated without error, but **all `r nrow(m1_errors)` errors confused the genotypes**, one in
+each group, and the vote share of the true class (`r f2(min(m1_errors$votes_true_class))`–`r f2(max(m1_errors$votes_true_class))`)
+was below that of the predicted class
+(`r f2(min(m1_errors$votes_predicted))`–`r f2(max(m1_errors$votes_predicted))`).
+
+```{r}
+#| label: votes
+#| fig-cap: "Vote shares of the leave-one-out predictions with 50 genes. Each bar is one left-out sample, the colours show how the 1,000 trees voted. Interactive: hover for the exact shares."
+votes <- rf_pred[n_features == 50]
+votes <- melt(votes, id.vars = c("model", "sample", "truth", "predicted"),
+              measure.vars = names(GROUP_COLOURS), variable.name = "class", value.name = "share")
+votes[, `:=`(
+  model_label = fifelse(model == "group_lrt", "Model 1 (planned)", "Model 2 (post-hoc)"),
+  class_label = factor(GROUP_LABELS[as.character(class)], levels = GROUP_LABELS),
+  sample = factor(sample, levels = sample_table$sample),
+  hover = sprintf("<b>%s</b><br>%s: %.2f<br>predicted: %s", sample, GROUP_LABELS[as.character(class)],
+                  share, GROUP_LABELS[predicted])
+)]
+make_panel <- function(model_name, show_legend) {
+  plot_ly(votes[model == model_name], x = ~sample, y = ~share, color = ~class_label,
+          colors = unname(GROUP_COLOURS), text = ~hover, hoverinfo = "text", type = "bar",
+          textposition = "none", legendgroup = ~class_label, showlegend = show_legend,
+          height = 620) |>
+    layout(barmode = "stack", yaxis = list(title = "Vote share"))
+}
+subplot(make_panel("group_lrt", TRUE), make_panel("factor_balanced", FALSE),
+        nrows = 2, shareX = TRUE, titleY = TRUE, margin = 0.06) |>
+  layout(barmode = "stack", xaxis = list(title = "", tickangle = -45),
+         margin = list(b = 110),
+         legend = list(title = list(text = "Votes for"), orientation = "h", x = 0, y = -0.28),
+         annotations = list(
+           list(text = "Model 1 (planned)", x = 0, y = 1.04, xref = "paper", yref = "paper",
+                showarrow = FALSE, xanchor = "left"),
+           list(text = "Model 2 (post-hoc)", x = 0, y = 0.47, xref = "paper", yref = "paper",
+                showarrow = FALSE, xanchor = "left"))) |>
+  config(displaylogo = FALSE)
+```
+
+### Why did Model 1 miss the genotype?
+
+::: {.grid}
+
+::: {.g-col-12 .g-col-md-8}
+The likelihood-ratio test ranks genes by their overall difference between the four groups, and
+that difference is dominated by infection. In the final Model 1, `r m1_infection` of the 50 genes
+are infection genes, but only `r m1_genotype` are genotype genes in mock cells. **The model most
+likely saw almost no genotype information**, which also explains why its accuracy moved with the
+number of genes (`r sens("group_lrt", 20)`, `r sens("group_lrt", 50)` and
+`r sens("group_lrt", 200)` of 12 correct with 20, 50 and 200 genes).
+:::
+
+::: {.g-col-12 .g-col-md-4}
+![Me, explaining to everyone who didn't run away fast enough why the gene selection has to happen inside the fold.](images/discussing_me.jpg){.photo fig-alt="Konrad talking, with sunglasses and cap, in a dry mountain landscape"}
+:::
+
+:::
+
+## A design-aware selection: `r m2$correct` of 12
+
+Model 2 applies the 2 × 2 design to the gene selection: in every fold it takes the 25 genes with
+the strongest genotype effect and the 25 with the strongest infection effect of an additive DESeq2
+model. It classified all `r m2$correct` samples correctly (95 % confidence interval
+`r f2(m2$accuracy_ci_lower)`–`r f2(m2$accuracy_ci_upper)`), with 20, 50 and 200 genes alike.
+
+::: {.callout-warning}
+## This estimate is optimistic
+The rule of Model 2 was chosen after the errors of Model 1 were analysed on the same 12 samples.
+Even though the gene selection stayed inside the folds, the choice of the rule itself did not, so
+the cross-validated accuracy of Model 2 is likely optimistic. The pre-specified result of this
+project is the one of Model 1, and only an independent dataset could confirm Model 2.
+:::
+
+![**a**, **b**, Confusion matrices of the leave-one-out predictions. **c**, Correct predictions with 20, 50 and 200 genes per fold; this check was descriptive and not used to choose the gene number.](assets/figures/figure_4.png){fig-alt="Confusion matrices of both models and bar chart of correct predictions by gene number" width="80%"}
+
+## Which genes carry the classification?
+
+A final Model 2 was fitted on all 12 samples to rank its genes by importance (scaled mean decrease
+in accuracy), and the number of folds in which each gene was selected was counted as its stability.
+**Genes among the 20 most important that were selected in at least 10 of 12 folds** were defined in
+advance as candidate biomarkers.
+
+```{r}
+#| label: candidates
+knitr::kable(
+  data.frame(Gene = candidates$symbol, Effect = candidates$dominant_effect,
+             `Importance rank` = candidates$importance_rank,
+             `Folds selected` = paste(candidates$folds_selected, "/ 12"),
+             `log2 FC infection (wt)` = f2(candidates$infection_wt_log2FC_shrunk),
+             `log2 FC 6KR vs wt (mock)` = f2(candidates$genotype_mock_log2FC_shrunk),
+             check.names = FALSE),
+  align = "llcccc",
+  caption = sprintf("The %d candidate genes, ordered by importance.", nrow(candidates))
+)
+```
+
+Most candidates are genotype markers, among them five KRAB zinc-finger genes, the gene family that
+recruits TRIM28 to repress endogenous retroviruses, so their up-regulation in 6KR cells is the
+expected signature of impaired TRIM28 function. The infection marker RPL30 most likely reflects the
+host shutoff rather than an absolute induction. OASL, the most important gene of the final model,
+was selected in only `r oasl_folds` of 12 folds and so did not pass the stability rule.
+
+![**a**, The 20 most important genes of the final Model 2, coloured by their dominant effect in the differential expression analysis. **b**, rlog expression of the candidate genes per sample; bars mark the group means.](assets/figures/figure_5.png){fig-alt="Lollipop chart of gene importance and dot plots of candidate gene expression" width="85%"}
+
+## What I took away from this
+
+Some general things I learned about Random Forests on small data, and which I will probably keep in
+mind for the next project:
+
+- **The gene selection is part of the model**, so it has to be inside the cross-validation as well,
+  otherwise the accuracy tells you more about the selection than about the classifier.
+- **How you select the genes decides what the forest can learn at all.** When the selection just
+  follows the biggest effect, a smaller but real factor like the genotype can get lost.
+- **Every rule you choose after looking at the result costs a bit of honesty**, that's why Model 2
+  is reported as an improvement from the error analysis and not as the main result.
+- **I'd always report the vote shares and the selection stability as well**, because the 12
+  predictions alone hide how close the decisions were and how much the selected genes change
+  between the folds.

@@ -1,0 +1,52 @@
+project:
+  type: website
+  output-dir: _site
+  # Copies the report figures and the public report PDF from the project into assets/ before
+  # every render, so the site only refers to files inside this folder.
+  pre-render: copy_assets.R
+
+website:
+  title: "Influenza RF biomarkers"
+  site-url: https://konbueck-r.github.io/influenza-random-forest/
+  repo-url: https://github.com/konbueck-r/influenza-random-forest
+  description: "RNA-seq analysis of influenza A virus-infected A549 cells with DESeq2 and a nested cross-validated Random Forest."
+  page-navigation: true
+  navbar:
+    left:
+      - href: index.qmd
+        text: Overview
+      - href: data-qc.qmd
+        text: Data & QC
+      - href: differential-expression.qmd
+        text: Differential expression
+      - href: random-forest.qmd
+        text: Random Forest
+      - href: methods.qmd
+        text: Methods & reproducibility
+    right:
+      - icon: github
+        href: https://github.com/konbueck-r/influenza-random-forest
+        aria-label: Source code on GitHub
+      - icon: file-earmark-pdf
+        href: assets/influenza_rf_biomarkers_report.pdf
+        aria-label: Full report (PDF)
+  page-footer:
+    left: "Konrad Bücking · Bioinformatics practical course, Friedrich Schiller University Jena"
+    right: "Data: GEO GSE133329 (Schmidt et al., PNAS 2019)"
+
+format:
+  html:
+    theme:
+      light: [cosmo, styles.scss]
+    toc: true
+    toc-depth: 2
+    fig-align: center
+    fig-cap-location: bottom
+    link-external-newwindow: true
+    mermaid:
+      theme: neutral
+
+execute:
+  echo: false
+  warning: false
+  message: false

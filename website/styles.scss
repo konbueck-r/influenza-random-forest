@@ -1,0 +1,51 @@
+/*-- scss:defaults --*/
+// Colours of the report figures: blue for wt, orange for 6KR.
+$primary: #1F5A96;
+$link-color: #1F5A96;
+$navbar-bg: #1F5A96;
+$body-color: #222222;
+$font-size-root: 17px;
+
+/*-- scss:rules --*/
+// Large numbers in the result boxes of the overview page.
+.key-number {
+  font-size: 2.2rem;
+  font-weight: 700;
+  color: $primary;
+  line-height: 1.1;
+}
+
+.key-label {
+  font-size: 0.95rem;
+  color: #555555;
+}
+
+.key-box {
+  border-left: 4px solid #F2AB6D;
+  padding: 0.4rem 0.9rem;
+  margin-bottom: 1rem;
+  background: #F7F9FC;
+}
+
+.figure-caption, figcaption {
+  font-size: 0.9rem;
+  color: #444444;
+}
+
+// Long script names in tables may break, so tables fit on phone screens.
+td code {
+  overflow-wrap: anywhere;
+}
+
+// Personal photos: rounded, with a soft shadow, and a small italic caption, so they read as
+// asides next to the text and not as data figures.
+img.photo {
+  border-radius: 10px;
+  box-shadow: 0 3px 12px rgba(0, 0, 0, 0.18);
+}
+
+figure:has(img.photo) figcaption {
+  font-style: italic;
+  font-size: 0.85rem;
+  text-align: center;
+}

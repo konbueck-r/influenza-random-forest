@@ -1,0 +1,122 @@
+---
+title: "Methods and reproducibility"
+subtitle: "How the results were produced, and what they cannot show"
+---
+
+```{r}
+#| label: setup
+source("_common.R")
+version_of <- function(pkg) as.character(packageVersion(pkg))
+gprofiler_version <- sub('.*chr "(.*)"', "\\1", grep("gprofiler_version",
+  readLines(results_path("enrichment", "gprofiler_version.txt")), value = TRUE))
+```
+
+## Pipeline
+
+The analysis is a set of seven numbered R scripts that each read their input from disk and write
+their output to disk; `run_all.R` runs them in order and records the session.
+
+| Script | Step |
+|---|---|
+| `01_build_count_matrix.R` | count matrix and sample table from the GEO files |
+| `02_qc_exploration.R` | gene filter, rlog, PCA, sample distances, outlier check |
+| `03_differential_expression.R` | DESeq2 interaction model, five contrasts, ashr shrinkage |
+| `04_enrichment.R` | over-representation analysis with g:Profiler |
+| `05_random_forest.R` | four-class Random Forest, nested leave-one-out cross-validation |
+| `06_biomarker_summary.R` | candidate table from importance and selection stability |
+| `07_report_figures.R` | composite figures for the report and this site |
+
+: Pipeline scripts in execution order. {tbl-colwidths="[40,60]"}
+
+**Key settings.** Gene filter: at least 10 counts in at least 3 samples. DESeq2 design
+`~ genotype + infection + genotype:infection`, references wt and mock, Benjamini-Hochberg adjusted
+p < 0.05. Over-representation analysis: up and down lists separately, |shrunken log2 fold change| > 1
+for the two large contrasts, all tested genes as background, terms with 10 to 1,000 genes.
+Random Forest: 1,000 trees, default number of candidate genes per split, 50 genes per fold (20 and
+200 as a descriptive check), seed 42 plus the fold index.
+
+## Software
+
+R `r paste(R.version$major, R.version$minor, sep = ".")` with DESeq2 `r version_of("DESeq2")`,
+ashr `r version_of("ashr")`, gprofiler2 `r version_of("gprofiler2")` (database version
+`r gprofiler_version`), randomForest `r version_of("randomForest")`, ggplot2
+`r version_of("ggplot2")` and plotly `r version_of("plotly")`. Package versions are recorded in an
+`renv` lockfile, and the report and this site are built with Quarto.
+
+## Reproducibility
+
+- **One command rebuilds every result** from the GEO files: `Rscript run_all.R` (about 5 minutes).
+- **A fresh run was compared with the previous outputs**: all result tables were identical, and the
+  only figure differences, the label positions of the volcano plots, were removed by fixing the
+  seed of the label placement.
+- **No number is typed by hand.** The report and these pages read every number from `results/`
+  when they are built.
+- **The gene selection is guarded against leakage**: the Random Forest script stops if the
+  left-out sample enters the DESeq2 fit of its fold.
+
+```{.bash}
+# from the project root, after renv::restore()
+Rscript run_all.R
+```
+
+## What changed compared with the course analysis
+
+::: {.grid}
+
+::: {.g-col-12 .g-col-md-8}
+I did the analysis first during the practical course, and when I rebuilt it later I found two
+problems in the first version, which are fixed now. The first one was a bit embarrassing, but I
+guess that is exactly how you learn to always check the reference levels:
+
+1. **Reference levels of the DESeq2 model.** The factors had not been relevelled, so the
+   alphabetical references (6KR, infected) were used, and the contrasts called "infection" and
+   "genotype" in fact described the infection effect in 6KR cells and the genotype effect in
+   infected cells.
+2. **Resampling of the Random Forest.** Repeated 60/40 splits left four test samples per split, so
+   the accuracy could only take the values 0, 0.25, 0.5, 0.75 and 1 and changed with every seed, and
+   in some runs the feature elimination saw all samples before splitting. Nested leave-one-out
+   cross-validation with the gene selection inside every fold avoids both.
+:::
+
+::: {.g-col-12 .g-col-md-4}
+![Me, back on course after the reference levels were fixed and the fresh run reproduced every result file.](images/boat_me.jpg){.photo fig-alt="Konrad smiling on a boat on a river"}
+:::
+
+:::
+
+## Limitations
+
+- **Twelve samples, three per group**, from one cell line (A549), one virus strain, one high
+  multiplicity of infection and one time point: the candidates describe this experimental system,
+  not a patient population.
+- **Each genotype is one lentivirally reconstituted population** of the same knockout clone, so the
+  genotype effect can also contain differences between the two populations, for example in
+  transgene expression.
+- **The wt-infected libraries were the smallest**, which increases the noise of weakly expressed
+  genes in this group.
+- **Model 2 is likely optimistic**, because its gene-selection rule was chosen after the Model 1
+  result on the same samples.
+- **Host shutoff distorts the normalisation**: transcripts that resist the virus-induced mRNA
+  degradation appear induced, so infection fold changes are relative.
+- **Endogenous retroviruses, the main topic of the source study, could not be examined**, because
+  the deposited count tables contain only annotated genes.
+
+## Full report and key references
+
+The [full report (PDF)](assets/influenza_rf_biomarkers_report.pdf) contains all methods, results,
+the discussion and 22 references. Key references for this site:
+
+- Schmidt N et al. An influenza virus-triggered SUMO switch orchestrates co-opted endogenous
+  retroviruses to stimulate host antiviral immunity. *PNAS* 2019.
+  [doi:10.1073/pnas.1907031116](https://doi.org/10.1073/pnas.1907031116)
+- Love MI, Huber W, Anders S. Moderated estimation of fold change and dispersion for RNA-seq data
+  with DESeq2. *Genome Biol* 2014. [doi:10.1186/s13059-014-0550-8](https://doi.org/10.1186/s13059-014-0550-8)
+- Breiman L. Random forests. *Mach Learn* 2001.
+  [doi:10.1023/A:1010933404324](https://doi.org/10.1023/A:1010933404324)
+- Ambroise C, McLachlan GJ. Selection bias in gene extraction on the basis of microarray
+  gene-expression data. *PNAS* 2002. [doi:10.1073/pnas.102102699](https://doi.org/10.1073/pnas.102102699)
+- Varma S, Simon R. Bias in error estimation when using cross-validation for model selection.
+  *BMC Bioinformatics* 2006. [doi:10.1186/1471-2105-7-91](https://doi.org/10.1186/1471-2105-7-91)
+- Kolberg L et al. g:Profiler — interoperable web service for functional enrichment analysis and
+  gene identifier mapping (2023 update). *Nucleic Acids Res* 2023.
+  [doi:10.1093/nar/gkad347](https://doi.org/10.1093/nar/gkad347)

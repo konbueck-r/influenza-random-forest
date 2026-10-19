@@ -1,0 +1,651 @@
+---
+title: "Gene expression analysis of influenza A virus-infected cells to identify biomarkers using Random Forests"
+subtitle: "Report of the bioinformatics practical course, Project 5"
+author: "Konrad Bücking"
+date: "2026-09-23"
+date-format: "D MMMM YYYY"
+lang: en-GB
+bibliography: references.bib
+csl: nature.csl
+link-citations: true
+crossref:
+  fig-title: "Fig."
+  fig-prefix: "Fig."
+  tbl-title: "Table"
+  tbl-prefix: "Table"
+  title-delim: " |"
+  custom:
+    - kind: float
+      key: suppfig
+      reference-prefix: "Supplementary Fig."
+      caption-prefix: "Supplementary Fig."
+      space-before-numbering: true
+format:
+  docx:
+    reference-doc: reference.docx
+    number-sections: true
+    output-file: influenza_rf_biomarkers_report.docx
+params:
+  public: false
+execute:
+  echo: false
+  warning: false
+  message: false
+---
+
+```{r}
+#| label: setup-root
+# Every path below is relative to the project root, like in the pipeline scripts.
+knitr::opts_knit$set(root.dir = normalizePath(".."))
+```
+
+```{r}
+#| label: setup-data
+suppressPackageStartupMessages(library(data.table))
+source("functions.R")
+
+# Number formatting for the running text.
+n <- function(x) formatC(x, format = "d", big.mark = ",")
+f1 <- function(x) formatC(x, format = "f", digits = 1)
+f2 <- function(x) formatC(x, format = "f", digits = 2)
+pv <- function(p) {
+  if (p >= 0.001) return(formatC(p, digits = 2, format = "fg", flag = "#"))
+  exponent <- floor(log10(p))
+  sprintf("%.1f × 10^−%d^", p / 10^exponent, -exponent)
+}
+
+# Inputs and quality control
+counts_raw <- readRDS(file.path("results", "intermediate", "counts_raw.rds"))
+lib_million <- colSums(counts_raw) / 1e6
+qc <- fread(file.path("results", "qc_sample_summary.csv"))
+pca_var <- fread(file.path("results", "qc_pca_variance.csv"))$percent_variance
+repl_dist <- qc[, .(lo = min(mean_dist_replicates), hi = max(mean_dist_replicates)), by = group]
+low_count <- qc[, .(lo = min(share_filtered_genes_below_5_counts),
+                    hi = max(share_filtered_genes_below_5_counts)),
+                by = .(wt_inf = group == "wt_infected")]
+
+# Differential expression
+contrasts <- c("infection_wt", "infection_6KR", "genotype_mock", "genotype_infected",
+               "interaction")
+deg <- lapply(setNames(contrasts, contrasts), function(x) {
+  fread(file.path("results", "deg", paste0(x, "_all.csv")))
+})
+deg_counts <- fread(file.path("results", "deg", "deg_counts.csv"))
+dc <- function(contrast, column) deg_counts[[column]][match(contrast, deg_counts$contrast)]
+gene <- function(contrast, symbol_name, column) {
+  deg[[contrast]][[column]][match(symbol_name, deg[[contrast]]$symbol)]
+}
+n_tested <- nrow(deg$infection_wt)
+n_multi_symbol <- sum(lengths(suppressMessages(AnnotationDbi::mapIds(
+  org.Hs.eg.db::org.Hs.eg.db, keys = deg$infection_wt$gene_id, keytype = "ENSEMBL",
+  column = "SYMBOL", multiVals = "list"))) > 1)
+
+# Epithelial IAV core genes named in the abstract of Zhou et al. 2021.
+core_genes <- c("IFI6", "IFIT2", "ISG15", "HERC5", "RSAD2", "GBP1", "IFIT3", "IFITM1", "LAMP3",
+                "USP18", "CXCL10", "BATF2", "IFI44L", "IL6", "OAS2", "IFI44", "OAS1")
+core_up <- deg$interaction[symbol %in% core_genes & direction == "up", symbol]
+# Interaction-up genes: induced by infection in 6KR cells, or only less repressed than in wt.
+interaction_up_ids <- deg$interaction[direction == "up", gene_id]
+n_up_induced_6kr <- sum(deg$infection_6KR[match(interaction_up_ids, gene_id), log2FC] > 0)
+
+# Enrichment
+ora <- fread(file.path("results", "enrichment", "enrichment_results.csv"))
+ora_counts <- fread(file.path("results", "enrichment", "enrichment_term_counts.csv"))
+ora_terms <- function(query_name) {
+  ora_counts[query == query_name, `GO:BP` + KEGG + REAC]
+}
+ora_n <- function(query_name) ora_counts[query == query_name, n_genes]
+ifn_rank <- ora[query == "infection_wt_up", which(term_name == "Interferon alpha/beta signaling")]
+ora_padj <- function(query_name, term) ora[query == query_name & term_name == term, p_adj][1]
+gprofiler_version <- sub('.*chr "(.*)"', "\\1", grep("gprofiler_version",
+  readLines(file.path("results", "enrichment", "gprofiler_version.txt")), value = TRUE))
+
+# Host-shutoff signature in the infection up list used for enrichment
+infection_up <- deg$infection_wt[direction == "up" & log2FC_shrunk > 1]
+# Cytosolic ribosomal protein genes (RPL/RPS with an optional A or X suffix, RPLP0-2 and RPSA;
+# this excludes the RPS6K kinases and RP-like paralogs) and nuclear-encoded OXPHOS subunit
+# genes (no assembly factors).
+symbols_wt <- deg$infection_wt$symbol
+is_rp <- grepl("^(RP[LS][0-9]+[AX]?|RPLP[0-2]|RPSA)$", symbols_wt)
+is_oxphos <- grepl("^(NDUF[ABCSV][0-9]+|COX[4-8]|ATP5(F1|M|P)|UQCR|SDH[ABCD]$)", symbols_wt)
+n_rp_up <- sum(deg$infection_wt$gene_id[is_rp] %in% infection_up$gene_id)
+n_oxphos_up <- sum(deg$infection_wt$gene_id[is_oxphos] %in% infection_up$gene_id)
+
+# Random Forest
+rf <- fread(file.path("results", "random_forest", "loocv_summary_metrics.csv"))
+m1 <- rf[model == "group_lrt"]
+m2 <- rf[model == "factor_balanced"]
+rf_sens <- fread(file.path("results", "random_forest", "loocv_n_features_sensitivity.csv"))
+sens <- function(model_name, n_genes) rf_sens[model == model_name & n_features == n_genes, correct]
+rf_pred <- fread(file.path("results", "random_forest", "loocv_predictions.csv"))
+m1_errors <- rf_pred[model == "group_lrt" & n_features == 50 & truth != predicted]
+# Vote share of the (wrongly) predicted class; the vote columns are named after the classes.
+m1_errors$votes_predicted <- sapply(seq_len(nrow(m1_errors)),
+                                    function(i) m1_errors[[m1_errors$predicted[i]]][i])
+class_metrics <- fread(file.path("results", "random_forest", "loocv_class_metrics.csv"))
+importance <- fread(file.path("results", "random_forest", "final_model_importance.csv"))
+stability <- fread(file.path("results", "random_forest", "gene_selection_stability.csv"))
+significant_in <- function(contrast_names) {
+  unique(unlist(lapply(contrast_names, function(x) deg[[x]][direction != "ns", gene_id])))
+}
+m1_genes <- importance[model == "group_lrt", gene_id]
+m1_infection <- sum(m1_genes %in% significant_in(c("infection_wt", "infection_6KR")))
+m1_genotype_mock <- sum(m1_genes %in% significant_in("genotype_mock"))
+m1_genotype_lfc <- median(abs(deg$genotype_mock[match(m1_genes, gene_id), log2FC_shrunk]))
+oasl_folds <- stability[model == "factor_balanced" & symbol == "OASL", folds_selected]
+
+# Candidate biomarkers
+candidates <- fread(file.path("results", "biomarkers", "candidate_genes.csv"))
+n_cand <- nrow(candidates)
+n_cand_genotype <- sum(candidates$dominant_effect == "genotype")
+n_cand_znf <- sum(grepl("^ZNF", candidates$symbol))
+```
+
+::: {custom-style="Author"}
+```{r}
+#| label: title-details
+#| results: asis
+# Matriculation number, degree programme and supervisors are kept in an untracked file, so that
+# the public version (rendered with -P public:true) and the public repository do not contain them.
+details_file <- file.path("report", "private_details.txt")
+use_private <- !isTRUE(params$public) && file.exists(details_file)
+details <- if (use_private) {
+  readLines(details_file, encoding = "UTF-8")
+} else {
+  "Bioinformatics practical course (module S.15), Friedrich Schiller University Jena, March 2025"
+}
+# A trailing backslash is a markdown line break, so the lines stay in one Author paragraph.
+cat(paste(details, collapse = "\\\n"))
+```
+:::
+
+# Abstract {.unnumbered}
+
+::: {custom-style="Abstract"}
+Influenza A virus (IAV) infection triggers the loss of SUMO-modified TRIM28, a transcriptional
+co-repressor of endogenous retroviruses, and this switch amplifies the interferon (IFN) response
+of the infected cell. The RNA-seq data of that study (GEO GSE133329: A549 cells expressing
+wild-type (wt) TRIM28 or the SUMOylation-deficient TRIM28 6KR mutant, mock or IAV infected, three
+replicates each) were reanalysed to find genes that separate the four conditions and could serve
+as biomarker candidates. Differential expression analysis with DESeq2 found
+`r n(dc("infection_wt", "significant"))` genes changed by infection in wt cells and
+`r n(dc("interaction", "significant"))` genes whose infection response differs between the
+genotypes; those with a higher infection response in 6KR cells are enriched for antiviral
+defence and type I IFN signalling. A Random
+Forest classifier was evaluated by nested leave-one-out cross-validation with the gene selection
+repeated inside every fold. The planned model, which selects genes by their overall difference
+between the four groups, classified `r m1$correct` of 12 samples correctly. All errors were
+genotype errors, most likely because infection genes dominated the selection. Selecting genotype and
+infection genes separately, a rule derived from this error analysis, classified
+`r m2$correct` of 12 samples correctly (95 % confidence interval
+`r round(100 * m2$accuracy_ci_lower)`–`r round(100 * m2$accuracy_ci_upper)` %); this estimate is
+optimistic, because the rule was chosen after the first result. The candidate genes of this
+model are mostly genotype markers, among them five KRAB zinc-finger genes, known readouts of
+TRIM28 repressor function, while the apparent induction of the infection marker RPL30 most likely
+reflects relative resistance to the virus-induced host shutoff. With twelve samples from one cell
+line, the candidates mainly describe the cellular TRIM28 state and need independent validation.
+:::
+
+# Introduction
+
+Influenza A virus (IAV) infects the epithelium of the respiratory tract. Infected epithelial cells
+sense viral RNA through cytosolic receptors such as RIG-I and respond with type I and type III
+interferons (IFNs), which induce hundreds of IFN-stimulated genes (ISGs) with antiviral function.
+IAV counteracts this response with its non-structural protein 1 (NS1), which binds double-stranded
+RNA (dsRNA) and blocks the activation of the transcription factor IRF3 and thereby the induction of
+IFN-β [@talon2000].
+
+The tripartite motif protein TRIM28 (also KAP1) is the co-repressor of the Krüppel-associated box
+zinc-finger proteins (KRAB-ZNFs), the largest family of transcriptional regulators in vertebrates,
+which silence transposable elements such as endogenous retroviruses (ERVs) [@ecco2017]. In adult
+human cells, loss of TRIM28 derepresses ERVs and ZNF genes and triggers an RNA-sensing response
+through the adaptor MAVS [@tie2018]. Schmidt et al. showed that IAV infection causes the loss of
+SUMO-modified TRIM28, which derepresses ERVs and unmasks them as a cellular source of dsRNA that
+amplifies the RIG-I/MAVS-dependent IFN response [@schmidt2019]. A TRIM28 mutant in which the six
+SUMOylated lysines are replaced by arginines (TRIM28 6KR) mimics this state. Other viruses appear
+to target the same switch, which supports the idea of a TRIM28-controlled antiviral defence
+[@lieber2025]. The RNA-seq data of that study, A549 cells reconstituted with wild-type (wt) TRIM28
+or TRIM28 6KR, mock or IAV infected, are the data of this project.
+
+Host transcriptional signatures can detect influenza infection, in blood even before the peak of
+symptoms [@woods2013; @zaas2013; @andresterre2015]. Random Forests [@breiman2001] are well suited
+to find such genes in expression data: they remain usable when there are thousands of genes but
+only a few samples, a setting in which classical regression models cannot be fitted without
+strong constraints, they classify more than two classes directly, and they rank genes by their
+importance for the classification
+[@diazuriarte2006]. With few samples, however, the performance estimate of a classifier is only
+trustworthy if every data-driven step, including the gene selection, is repeated inside the
+cross-validation [@ambroise2002; @varma2006].
+
+The aim of this project was to analyse the GSE133329 count data with DESeq2 and a Random Forest
+classifier in R, to identify genes that separate the four conditions (wt or 6KR, mock or infected)
+as potential biomarkers, to assess the classifier by accuracy, sensitivity and specificity, and to
+interpret the selected genes in the context of the host antiviral response. The analysis started
+during the practical course and was rebuilt afterwards as a reproducible pipeline; where the
+rebuilt analysis differs from the course analysis, this is stated in the Discussion.
+
+# Materials and methods
+
+## Data
+
+Per-gene read counts of GEO series GSE133329 [@schmidt2019] were used as deposited (featureCounts,
+Ensembl GRCh38 release 91). A CRISPR/Cas9 TRIM28 knockout clone of A549 lung epithelial carcinoma
+cells was reconstituted with wt TRIM28 or TRIM28 6KR by lentiviral transduction, and cells were
+mock infected or infected with IAV A/WSN/33 at a multiplicity of infection (MOI) of 10 for 6 hours
+(three independent replicates per group, 12 samples, mRNA sequencing). The 12 GEO count tables contain
+`r n(nrow(counts_raw))` genes in identical order; `r n(sum(rowSums(counts_raw) == 0))` of them
+have zero counts in all samples. They are identical to the count table used during the course.
+
+## Preprocessing and quality control
+
+Genes with at least 10 counts in at least 3 samples (the size of the smallest group) were kept.
+Counts were transformed with the regularised logarithm (rlog) of DESeq2 [@love2014] in blind mode,
+so that no group information enters the transformation. Sample structure was examined by
+principal component analysis (PCA) of the 500 most variable genes, by Euclidean distances between
+samples on all filtered genes and by hierarchical clustering (average linkage).
+
+## Differential expression
+
+DESeq2 [@love2014] was fitted with the design `~ genotype + infection + genotype:infection` and
+the reference levels wt and mock. From this single fit, five contrasts were extracted: the
+infection effect in wt and in 6KR cells, the genotype effect (6KR vs wt) in mock and in infected
+cells, and the interaction, which measures how the 6KR mutation changes the infection effect.
+Interaction-up genes have a higher infection effect in 6KR than in wt cells (stronger induction or
+weaker repression), interaction-down genes a lower one.
+P-values were adjusted by the Benjamini-Hochberg (BH) method, and genes with an adjusted p-value
+below 0.05 were called differentially expressed (DEGs). Fold changes for plots and ranking were
+shrunk with ashr [@stephens2017], which pulls fold changes towards zero in proportion to their
+uncertainty, so that large but noisy fold changes of weakly expressed genes do not dominate the
+ranking. Ensembl identifiers were mapped to gene symbols with
+org.Hs.eg.db; `r n(sum(deg$infection_wt$symbol == "" | is.na(deg$infection_wt$symbol)))` of
+`r n(n_tested)` tested genes have no symbol and are kept under their Ensembl identifier, and
+`r n(n_multi_symbol)` map to several symbols, of which the first was kept.
+
+## Over-representation analysis
+
+Up- and down-regulated DEGs were tested for over-represented terms of GO Biological Process, KEGG
+and Reactome with g:Profiler [@kolberg2023] (version `r gprofiler_version`), with all tested genes
+as background and BH-adjusted p-values below 0.05. For the two large contrasts (infection in wt,
+genotype in mock), only DEGs with an absolute shrunken log2 fold change above 1 were used; the
+interaction list was used without a fold-change cutoff. Terms with fewer than 10 or more than
+1,000 genes were removed.
+
+## Random Forest classification
+
+The four groups were classified with Random Forests (randomForest [@liaw2002], 1,000 trees,
+default number of candidate genes per split) on rlog values. Performance was estimated by
+leave-one-out cross-validation (LOOCV): each of the 12 samples was predicted by a model built on
+the other 11. **Gene selection was repeated inside every fold on the 11 training samples only**,
+so the left-out sample never influenced which genes the model saw [@ambroise2002]. The gene
+filter and the blind rlog transformation use no group labels and were computed once. Two
+selection rules were compared, each with 50 genes:
+
+- *Model 1 (planned):* the 50 genes with the smallest p-value in a DESeq2 likelihood-ratio test
+  of the four-group design against an intercept-only model.
+
+- *Model 2 (post-hoc):* the 25 genes with the smallest p-value for the genotype effect and the
+  25 genes with the smallest p-value for the infection effect of an additive DESeq2 model
+  (`~ genotype + infection`). This rule was added after the errors of Model 1 were analysed and
+  is the only variant that was tested.
+
+From the 12 out-of-fold predictions, accuracy with an exact binomial 95 % confidence interval,
+a one-sided binomial test against the no-information rate of 0.25 (BH-adjusted over the two
+models), and per-class sensitivity and specificity were computed. The infected-vs-mock
+performance and the genotype accuracy were read off the same four-class predictions. As a
+descriptive check, not as tuning, both models were also run with 20 and 200 genes. A final model
+per rule was fitted on all 12 samples to rank genes by the scaled mean decrease in accuracy
+(randomForest default), and the number
+of folds in which each gene was selected was counted as its selection stability. Candidate
+biomarkers were defined in advance as genes of Model 2 that are among its 20 most important genes
+and were selected in at least 10 of 12 folds.
+
+## Software and reproducibility
+
+The analysis ran in R `r paste(R.version$major, R.version$minor, sep = ".")` with DESeq2
+`r packageVersion("DESeq2")`, ashr `r packageVersion("ashr")`, gprofiler2
+`r packageVersion("gprofiler2")`, randomForest `r packageVersion("randomForest")` and ggplot2
+`r packageVersion("ggplot2")`. The pipeline (seven numbered scripts and `run_all.R`) reproduces
+every table and figure of this report from the GEO files; package versions are recorded in an
+`renv` lockfile, and all numbers in this report are read from the pipeline output when the report
+is built.
+
+# Results
+
+## Do the samples group as expected?
+
+![**Study design and sample structure.** **a**, Design: a TRIM28 knockout clone of A549 cells reconstituted with wt TRIM28 or the SUMOylation-deficient TRIM28 6KR, mock or IAV A/WSN/33 infected (MOI 10, 6 hours post infection, hpi), three replicates per group. **b**, PCA of the 500 most variable genes after rlog transformation; the percentage of variance is given on each axis. **c**, Euclidean distances between samples on all `r n(n_tested)` filtered genes, clustered by average linkage; darker blue means more similar.](../figures/report/figure_1.png){#fig-design width="100%"}
+
+The expression filter kept `r n(n_tested)` of `r n(nrow(counts_raw))` genes. Library sizes ranged
+from `r f1(min(lib_million))` to `r f1(max(lib_million))` million assigned reads, and all six
+infected samples had smaller libraries than all six mock samples (Supplementary Fig. 1). In the
+PCA, the first principal component (`r f1(pca_var[1])` % of the variance) separates infected from
+mock samples and the second (`r f1(pca_var[2])` %) separates the genotypes (@fig-design b). The
+four groups form four separate clusters on the 500 most variable genes.
+
+On all filtered genes, the wt-infected replicates are further apart from each other (mean
+distance to their replicates `r f1(repl_dist[group == "wt_infected", lo])`–`r f1(repl_dist[group == "wt_infected", hi])`)
+than the replicates of the other groups (`r f1(min(repl_dist[group != "wt_infected", lo]))`–`r f1(max(repl_dist[group != "wt_infected", hi]))`),
+`wt_infected_2` lies closest to a 6KR-infected sample (@fig-design c), and in the dendrogram
+`wt_infected_1` joins the infected branch on its own (Supplementary Fig. 2).
+These three samples have the smallest libraries (`r f1(min(lib_million[grepl("wt_infected", names(lib_million))]))`–`r f1(max(lib_million[grepl("wt_infected", names(lib_million))]))`
+million reads) and the highest share of filtered genes with fewer than 5 counts
+(`r f1(100 * low_count[wt_inf == TRUE, lo])`–`r f1(100 * low_count[wt_inf == TRUE, hi])` %
+against `r f1(100 * low_count[wt_inf == FALSE, lo])`–`r f1(100 * low_count[wt_inf == FALSE, hi])` %).
+The spread therefore most likely reflects noise in weakly expressed genes rather than a failed
+sample, and all 12 samples were kept.
+
+## Infection dominates, and the 6KR mutation amplifies the antiviral response
+
+Infection changed the expression of `r n(dc("infection_wt", "significant"))` of `r n(n_tested)`
+tested genes in wt cells (`r n(dc("infection_wt", "up"))` up, `r n(dc("infection_wt", "down"))`
+down) and `r n(dc("infection_6KR", "significant"))` genes in 6KR cells (@fig-deg a). The
+6KR mutation alone changed `r n(dc("genotype_mock", "significant"))` genes in mock cells and
+`r n(dc("genotype_infected", "significant"))` genes in infected cells. Classical ISGs were induced
+by infection in wt cells, for example OASL (shrunken log2 fold change
+`r f1(gene("infection_wt", "OASL", "log2FC_shrunk"))`) and IFIT1
+(`r f1(gene("infection_wt", "IFIT1", "log2FC_shrunk"))`) (@fig-deg b), whereas IFNB1 itself was
+not significantly induced (adjusted p = `r pv(gene("infection_wt", "IFNB1", "padj"))`).
+
+![**Differential expression.** **a**, Number of up- and down-regulated genes (BH-adjusted p < 0.05) per contrast of the DESeq2 interaction model. **b**, Infection effect in wt cells. **c**, Interaction: difference of the infection effect between 6KR and wt cells; positive values mean a higher infection effect in 6KR cells (stronger induction or weaker repression). Volcano plots show ashr-shrunken log2 fold changes; the dashed line marks an adjusted p-value of 0.05, and the ten most significant genes are annotated.](../figures/report/figure_2.png){#fig-deg width="100%"}
+
+![**Over-representation analysis.** Five most significant terms per source (GO Biological Process, KEGG, Reactome) for **a**, genes induced by infection in wt cells; **b**, interaction-up genes (higher infection effect in 6KR than in wt cells); **c**, genes up-regulated in mock-infected 6KR vs wt cells. Colour gives the −log10 BH-adjusted p-value, point size the number of list genes in the term, and the x-axis the share of list genes in the term. Background: all `r n(n_tested)` tested genes.](../figures/report/figure_3.png){#fig-ora width="100%"}
+
+The interaction identified `r n(dc("interaction", "significant"))` genes whose infection response
+differs between the genotypes (`r n(dc("interaction", "up"))` up, `r n(dc("interaction", "down"))` down;
+@fig-deg c). Of the `r n(dc("interaction", "up"))` interaction-up genes, `r n_up_induced_6kr` were
+induced by infection in 6KR cells (log2 fold change above 0), and
+`r dc("interaction", "up") - n_up_induced_6kr` were repressed by infection in wt cells and less so
+in 6KR cells. The interaction-up genes include ISGs such as IRF1, IFIT3, IFI16 and USP18. IFNB1 itself was not a significant interaction gene (adjusted p =
+`r pv(gene("interaction", "IFNB1", "padj"))`), but in infected cells it was
+`r f1(gene("genotype_infected", "IFNB1", "log2FC_shrunk"))` log2 units higher in 6KR than in wt
+cells (shrunken; adjusted p = `r pv(gene("genotype_infected", "IFNB1", "padj"))`). Of
+`r length(core_genes)` genes named as key IAV response genes of epithelial cells in a
+integrative analysis of 35 datasets [@zhou2021], `r length(core_up)` are interaction-up genes
+(`r paste(core_up, collapse = ", ")`).
+**The interaction-up genes therefore overlap with the canonical epithelial antiviral
+response.** The interaction-down genes include ER stress genes such as
+HERPUD1 and HSPA5. The remaining contrasts are shown in Supplementary Fig. 3 and the 50 most significant
+interaction genes in Supplementary Fig. 4.
+
+## Which processes are affected?
+
+The `r n(ora_n("infection_wt_up"))` genes induced by infection in wt cells gave
+`r n(ora_terms("infection_wt_up"))` enriched terms, led by translation and ribosome terms and
+oxidative phosphorylation (@fig-ora a). `r n_rp_up` of `r sum(is_rp)` cytosolic ribosomal protein genes
+and `r n_oxphos_up` of `r sum(is_oxphos)` nuclear-encoded oxidative phosphorylation subunit genes
+are in this list, while "Interferon alpha/beta signaling" only ranks at position `r ifn_rank`. As
+discussed below, this pattern most likely reflects relative resistance of these transcripts to
+the virus-induced host shutoff. Genes repressed by infection were enriched for cell cycle, DNA
+replication and repair terms (Supplementary Fig. 5).
+
+The `r n(ora_n("interaction_up"))` interaction-up genes gave
+`r n(ora_terms("interaction_up"))` terms, led by defence response to other organisms and to
+viruses, followed by type I IFN production and signalling (adjusted p =
+`r pv(ora_padj("interaction_up", "defense response to virus"))` for "defense response to virus";
+@fig-ora b). The `r n(ora_n("genotype_mock_up"))` genes up-regulated in uninfected 6KR cells were
+enriched for homophilic and calcium-dependent cell adhesion, and Reactome listed "Regulation of
+endogenous retroelements by KRAB-ZFP proteins" (adjusted p =
+`r pv(ora_padj("genotype_mock_up", "Regulation of endogenous retroelements by KRAB-ZFP proteins"))`;
+@fig-ora c), which reflects the many KRAB-ZNF genes in this list. The interaction-down genes were
+enriched for the unfolded protein response (Supplementary Fig. 5).
+
+## Random Forest classification: from the planned model to a design-aware gene selection
+
+The planned Model 1 classified `r m1$correct` of 12 samples correctly (accuracy
+`r f2(m1$accuracy)`, 95 % confidence interval `r f2(m1$accuracy_ci_lower)`–`r f2(m1$accuracy_ci_upper)`,
+BH-adjusted p = `r pv(m1$p_vs_chance_bh)` against the no-information rate of 0.25; @tbl-rf,
+@fig-rf a). Infected and mock samples were separated without error
+(`r round(12 * m1$infection_accuracy)` of 12), but all `r nrow(m1_errors)` errors confused the
+genotypes: `r paste(sprintf("%s was predicted as %s", m1_errors$sample, sub("_", " ", m1_errors$predicted)), collapse = ", ")`.
+The share of tree votes for the true class of these samples
+(`r f2(min(m1_errors$votes_true_class))`–`r f2(max(m1_errors$votes_true_class))`) was below that of the
+predicted class (`r f2(min(m1_errors$votes_predicted))`–`r f2(max(m1_errors$votes_predicted))`).
+
+The most likely reason lies in the gene selection. The likelihood-ratio test ranks genes by their overall
+difference between the four groups, and this difference is dominated by infection:
+`r m1_infection` of the 50 genes of the final Model 1 are infection DEGs, but only
+`r m1_genotype_mock` are genotype DEGs in mock cells, with a median absolute genotype fold change
+of `r f2(m1_genotype_lfc)` log2 units. **The model saw almost no genotype information.** Model 1
+also depended on the number of genes (`r sens("group_lrt", 20)`, `r sens("group_lrt", 50)` and
+`r sens("group_lrt", 200)` of 12 correct with 20, 50 and 200 genes; @fig-rf c).
+
+Model 2 applies the 2 × 2 design to the gene selection and takes half of its genes from the
+genotype effect and half from the infection effect. It classified `r m2$correct` of 12 samples
+correctly (95 % confidence interval `r f2(m2$accuracy_ci_lower)`–`r f2(m2$accuracy_ci_upper)`,
+BH-adjusted p = `r pv(m2$p_vs_chance_bh)`), including both genotypes in mock and infected cells
+(@fig-rf b), and it did so with 20, 50 and 200 genes alike. Because the rule was derived from
+the errors of Model 1 on the same 12 samples, its cross-validated accuracy is an optimistic
+estimate; the pre-specified result of this project is the one of Model 1.
+
+```{r}
+#| label: tbl-rf
+#| tbl-cap: "**Random Forest performance in leave-one-out cross-validation.** Both models use 50 genes selected inside every fold. The infected-vs-mock and genotype results are read off the same four-class predictions. P-values are one-sided binomial tests against the no-information rate of 0.25, BH-adjusted over the two models. Sensitivity and specificity are computed per class (one class against the other three); a range is given where the four classes differ."
+# One value if all four classes agree, otherwise the range.
+range_text <- function(x) {
+  if (diff(range(x)) == 0) return(f2(x[1]))
+  sprintf("%s–%s", f2(min(x)), f2(max(x)))
+}
+row_for <- function(m, model_name) {
+  c(
+    sprintf("%d / 12", m$correct),
+    sprintf("%s (%s–%s)", f2(m$accuracy), f2(m$accuracy_ci_lower), f2(m$accuracy_ci_upper)),
+    pv(m$p_vs_chance_bh),
+    range_text(class_metrics[model == model_name, sensitivity]),
+    range_text(class_metrics[model == model_name, specificity]),
+    sprintf("%d / 12", round(12 * m$infection_accuracy)),
+    sprintf("%d / 6", round(6 * m$genotype_accuracy_mock)),
+    sprintf("%d / 6", round(6 * m$genotype_accuracy_infected)),
+    paste(sens(model_name, 20), sens(model_name, 50), sens(model_name, 200), sep = " / "),
+    as.character(stability[model == model_name & folds_selected == 12, .N])
+  )
+}
+table_rf <- data.frame(
+  Measure = c("Correct predictions (four classes)", "Accuracy (95 % CI)",
+              "Adjusted p vs. chance", "Sensitivity per class", "Specificity per class",
+              "Infected vs. mock correct",
+              "Genotype correct, mock samples", "Genotype correct, infected samples",
+              "Correct with 20 / 50 / 200 genes", "Genes selected in all 12 folds"),
+  `Model 1 (planned)` = row_for(m1, "group_lrt"),
+  `Model 2 (post-hoc)` = row_for(m2, "factor_balanced"),
+  check.names = FALSE
+)
+knitr::kable(table_rf, align = "lcc")
+```
+
+![**Random Forest classification.** **a**, **b**, Confusion matrices of the leave-one-out predictions of Model 1 (genes selected by a likelihood-ratio test across the four groups) and Model 2 (25 genotype and 25 infection genes). **c**, Number of correct predictions with 20, 50 and 200 genes per fold; this check was descriptive and not used to choose the gene number.](../figures/report/figure_4.png){#fig-rf width="100%"}
+
+## Candidate biomarkers
+
+`r n_cand` genes of Model 2 were among its 20 most important genes and were selected in at least
+10 of 12 folds (@tbl-candidates, @fig-biomarkers). `r n_cand_genotype` of them are genotype
+markers, `r n_cand_znf` of these KRAB-ZNF genes, and ADAMTS2 shows the strongest genotype effect
+of all candidates (log2 fold change
+`r f1(gene("genotype_mock", "ADAMTS2", "log2FC_shrunk"))` in mock cells). The three infection
+markers are RPL30, ARRB2 and OST4. No classical ISG passed the stability rule: OASL, the most
+important gene of the final model, was selected in `r oasl_folds` of 12 folds.
+
+![**Candidate biomarkers.** **a**, The 20 most important genes of the final Model 2 (scaled mean decrease in accuracy), coloured by their dominant effect in the differential expression analysis (the factor with the larger significant shrunken fold change). **b**, rlog expression of the `r n_cand` candidate genes per sample; bars mark the group means.](../figures/report/figure_5.png){#fig-biomarkers width="100%"}
+
+```{r}
+#| label: tbl-candidates
+#| tbl-colwidths: [16, 14, 13, 13, 22, 22]
+#| tbl-cap: "**Candidate biomarker genes.** Genes among the 20 most important genes of the final Model 2 that were selected in at least 10 of 12 cross-validation folds, ordered by importance. Log2 fold changes are ashr-shrunken: infection in wt cells and 6KR vs wt in mock cells. † Ribosomal protein gene; its induction is most likely relative (host shutoff, see Discussion)."
+table_cand <- data.frame(
+  Gene = paste0(candidates$symbol, ifelse(candidates$host_shutoff_caveat, " †", "")),
+  `Dominant effect` = candidates$dominant_effect,
+  `Importance rank` = candidates$importance_rank,
+  `Folds selected` = paste(candidates$folds_selected, "/ 12"),
+  `log2 FC infection (wt)` = f2(candidates$infection_wt_log2FC_shrunk),
+  `log2 FC 6KR vs wt (mock)` = f2(candidates$genotype_mock_log2FC_shrunk),
+  check.names = FALSE
+)
+knitr::kable(table_cand, align = "llcccc")
+```
+
+# Discussion
+
+## The 6KR mutation amplifies the interferon response to infection
+
+The differential expression results reproduce the central transcriptomic finding of Schmidt et
+al. [@schmidt2019]. The interaction-up genes include many ISGs, are
+enriched for antiviral defence and type I IFN signalling, and overlap with the canonical
+epithelial IAV response genes [@zhou2021]. In wt cells, IFNB1 was not significantly induced at 6
+hpi, which is in line with the block of IRF3 activation by NS1 [@talon2000] and with the NS1-dependent
+targeting of IFN-related host mRNAs during IAV shutoff [@chaimayo2018]. In infected 6KR cells, IFNB1 was higher than in infected wt cells. The interaction term for
+IFNB1 was not significant, however, so these data do not show that the induction itself differs
+between the genotypes; with few IFNB1 reads in wt cells, the wt induction is estimated imprecisely.
+The stronger ISG response of 6KR cells fits the model of Schmidt et al., in which ERV-derived
+dsRNA from derepressed loci adds to the viral stimulus [@schmidt2019]. The ERV transcripts themselves could not be examined here: they were quantified in
+the original study by a separate repeat-aware mapping, and the deposited count tables contain only
+annotated genes.
+
+## Genotype markers read out the TRIM28 repressor state
+
+Ten of the 13 candidate genes are genotype markers, and five of them are KRAB-ZNF genes. KRAB-ZNF
+proteins recruit TRIM28 to repress transposable elements [@ecco2017], and loss of TRIM28 in adult
+human cells derepresses both ERVs and ZNF genes [@tie2018]. The up-regulation of ZNF genes in 6KR
+cells, which Schmidt et al. also reported [@schmidt2019], is therefore the expected signature of
+impaired TRIM28 function. ADAMTS2, the candidate with the largest genotype effect, is also one of
+the two most prominently labelled genes of the mock comparison in the original study, and the
+cell-adhesion terms of this analysis match theirs. For ADAMTS2, TNNT1, ABI3BP, GLIPR1 and SULT2B1, no link to influenza
+or to TRIM28 was found in the literature; they are data-driven markers of the 6KR state in this
+cell line. **These genes mainly separate the genotypes, not infected from uninfected cells.** Whether they also
+report the infection-induced loss of TRIM28 SUMOylation in wt cells cannot be read from these
+data: infection changed several of them in wt cells, but in both directions (@tbl-candidates).
+
+## Infection markers and the host shutoff
+
+The three infection markers need a different reading. IAV degrades most host mRNAs, but short
+transcripts and mRNAs of cell maintenance processes such as oxidative phosphorylation are
+refractory to this shutoff [@bercovich2016], and the RNAs that escape PA-X-mediated degradation
+are enriched for translation-related genes including ribosomal proteins [@gaucherand2019]. DESeq2
+normalisation assumes that most genes do not change; under a global loss of host mRNA, transcripts
+that resist the shutoff therefore appear induced. This most likely explains the dominance of ribosome and
+oxidative phosphorylation terms among the infection-induced genes and makes the induction of
+RPL30, and plausibly of the short housekeeping transcript OST4, a relative rather than an absolute
+increase. ARRB2 encodes β-arrestin 2, which promotes virus-induced IFN-β production through
+cGAS-STING in macrophages and is degraded by viruses as an immune-evasion strategy [@zhang2020];
+whether it has a similar role in IAV-infected epithelial cells is open. The classical ISG OASL,
+which enhances RIG-I signalling [@zhu2014], was the most important gene of both final models but
+did not pass the stability rule, probably because many infection genes are about equally strong,
+so the infection half of the Model 2 selection changes between folds.
+
+## What changed compared with the course analysis
+
+Two problems of the course analysis were fixed. First, the factors of the DESeq2 model had not
+been relevelled, so the alphabetical reference levels (6KR, infected) were used; the contrasts
+called "infection" and "genotype" therefore described the infection effect in 6KR cells and the
+genotype effect in infected cells. Second, the Random Forest was evaluated on repeated 60/40
+splits, which left four test samples per split, so the accuracy could only take the values 0,
+0.25, 0.5, 0.75 and 1 and changed with every random seed; in some runs, recursive feature
+elimination was applied to all samples before splitting. Nested LOOCV with the gene selection
+inside every fold avoids this selection bias [@ambroise2002; @varma2006].
+
+## Limitations
+
+The study has 12 samples, three per group, from one cell line (A549, a lung carcinoma line), one
+virus strain, one high MOI and one time point, so the candidates describe this experimental
+system and not a patient population. The wt-infected libraries were the smallest, which increases
+the noise of weakly expressed genes in this group.
+The accuracy of Model 2 is likely optimistic, not only because of the small sample size, but also
+because its gene-selection rule was chosen after the Model 1 result on the same samples; only an
+independent dataset can confirm it. Each genotype is one lentivirally reconstituted population of
+the same knockout clone, so the genotype effect can also contain differences between the two
+transduced populations, for example in transgene expression, and not only the loss of the
+SUMOylation sites. Diagnostic host-response signatures of influenza are
+measured in blood and are dominated by ISGs [@woods2013; @zaas2013; @andresterre2015]; the genes
+found here in an epithelial cell line would have to be tested in such cohorts before they could be
+called biomarkers for diagnosis.
+
+## Conclusion
+
+Infection and the TRIM28 genotype can be separated from the transcriptome of these cells: the
+infection effect by a large margin, the genotype effect reliably only with a gene selection that
+accounts for the 2 × 2 design, a rule that still needs validation on independent data. The
+candidate genes mainly reflect TRIM28 repressor function and the host-shutoff pattern, while the
+amplified IFN response of 6KR cells appears in the interaction analysis; both are consistent with
+the SUMO switch model of the original study.
+
+# Abbreviations {.unnumbered}
+
+Gene symbols follow the HGNC nomenclature and are not listed.
+
+| Abbreviation | Meaning |
+|----------|------------------------------------------|
+| 6KR | TRIM28 mutant in which the six SUMOylated lysines (K) are replaced by arginines (R) |
+| BH | Benjamini-Hochberg (adjustment of p-values for multiple testing) |
+| cGAS-STING | cyclic GMP-AMP synthase – stimulator of interferon genes (DNA-sensing pathway) |
+| CI | confidence interval |
+| DEG | differentially expressed gene |
+| dsRNA | double-stranded RNA |
+| ER | endoplasmic reticulum |
+| ERV | endogenous retrovirus |
+| FC | fold change |
+| GEO | Gene Expression Omnibus |
+| GO, GO:BP | Gene Ontology, Gene Ontology Biological Process |
+| GRCh38 | human reference genome, Genome Reference Consortium build 38 |
+| hpi | hours post infection |
+| IAV | influenza A virus |
+| IFN | interferon |
+| IRF3 | interferon regulatory factor 3 |
+| ISG | interferon-stimulated gene |
+| KAP1 | KRAB-associated protein 1 (other name of TRIM28) |
+| KEGG | Kyoto Encyclopedia of Genes and Genomes |
+| KRAB-ZNF, KRAB-ZFP | Krüppel-associated box zinc-finger protein |
+| LOOCV | leave-one-out cross-validation |
+| LRT | likelihood-ratio test (DESeq2 test of the four-group model against an intercept-only model) |
+| MAVS | mitochondrial antiviral-signalling protein |
+| MOI | multiplicity of infection |
+| NS1 | non-structural protein 1 of influenza A virus |
+| PA-X | host-shutoff endoribonuclease of influenza A virus, encoded by the PA (polymerase acidic) gene |
+| PCA | principal component analysis |
+| REAC | Reactome pathway database (in figure labels) |
+| RIG-I | retinoic acid-inducible gene I (cytosolic RNA sensor) |
+| rlog | regularised logarithm (DESeq2 transformation) |
+| RNA-seq | RNA sequencing |
+| SUMO | small ubiquitin-like modifier |
+| TRIM28 | tripartite motif-containing protein 28 |
+| wt | wild type |
+
+# References {.unnumbered}
+
+::: {#refs}
+:::
+
+# Supplementary figures {.unnumbered}
+
+::: {#suppfig-library}
+![](../figures/report/supplementary_1.png){width="100%"}
+
+**Library sizes and expression distributions.** **a**, Assigned reads per sample. **b**, rlog expression per sample after filtering.
+:::
+
+::: {#suppfig-clustering}
+![](../figures/report/supplementary_2.png){width="100%"}
+
+**Sample clustering.** **a**, Hierarchical clustering of samples on all filtered genes (Euclidean distance, average linkage). **b**, Variance explained by the principal components of the 500 most variable genes.
+:::
+
+::: {#suppfig-volcanoes}
+![](../figures/report/supplementary_3.png){width="100%"}
+
+**Further contrasts.** Volcano plots for **a**, infection in 6KR cells; **b**, 6KR vs wt in mock cells; **c**, 6KR vs wt in infected cells.
+:::
+
+::: {#suppfig-heatmap}
+![](../figures/deg/heatmap_interaction_top_genes.png){width="85%"}
+
+**Interaction genes.** rlog expression of the 50 most significant interaction genes, scaled per gene (z-score).
+:::
+
+::: {#suppfig-ora-down}
+![](../figures/report/supplementary_5.png){width="100%"}
+
+**Over-representation analysis of the down-regulated lists.** **a**, Genes repressed by infection in wt cells. **b**, Genes down-regulated in mock-infected 6KR vs wt cells. **c**, Interaction-down genes (lower infection effect in 6KR than in wt cells).
+:::
+
+::: {#suppfig-model1}
+![](../figures/random_forest/final_model_importance_group_lrt.png){width="85%"}
+
+**Model 1 importance.** The 20 most important genes of the final Model 1, coloured by their dominant effect in the differential expression analysis.
+:::

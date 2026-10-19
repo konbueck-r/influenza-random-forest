@@ -1,0 +1,5 @@
+# md5 checksums of the input files (md5sum format), recorded when they were copied in.
+# Sizes in bytes: GSE133329_RAW.tar 1249280, GSE133329_family.soft 42391, reference/course_count_table.csv 1161431
+51f80669db93b72d468bfae7558ec411 *GSE133329_RAW.tar
+d1a7f03324b4b33ee9c8b3a36e2bc37c *GSE133329_family.soft
+e8c3fd8096823f02b75751f37b1cbd52 *reference/course_count_table.csv
